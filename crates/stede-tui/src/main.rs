@@ -17,8 +17,10 @@ use std::time::Instant;
 
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event};
+use stede_core::config::{self, Config, ConfigError};
 use stede_core::layout::LayoutOptions;
 use stede_core::{App, AppOptions};
+use stede_markdown::Flavor;
 
 const USAGE: &str = "\
 Usage: stede [PATH]
@@ -74,7 +76,10 @@ fn main() -> ExitCode {
             println!("{} {}", stede_core::SHORT_NAME, env!("CARGO_PKG_VERSION"));
             Ok(())
         }
-        Ok(Command::Probe) => probe::run(),
+        Ok(Command::Probe) => {
+            let (config, errors) = load_config(None);
+            probe::run(&config, &errors)
+        }
         Ok(Command::Open(path)) => open(path),
         Err(e) => {
             eprintln!("stede: {e}\n\n{USAGE}");
@@ -106,33 +111,89 @@ fn open(path: Option<PathBuf>) -> io::Result<()> {
         },
         None => false,
     };
+    let (config, config_errors) = load_config(path.as_deref());
+    let theme = ui::Theme::from_core(
+        &config.theme,
+        ui::ColorSupport::detect(
+            std::env::var("COLORTERM").ok().as_deref(),
+            std::env::var("TERM").ok().as_deref(),
+        ),
+    );
     let mut app = App::new(AppOptions {
         layout: LayoutOptions {
             tree_folded,
             ..LayoutOptions::default()
         },
+        config,
+        config_errors,
     });
-    if let Some(p) = &path {
-        // Loading files arrives in phase 1 step 5 (docs/phase-1.md).
+    // Loading files arrives in phase 1 step 5 (docs/phase-1.md). A config
+    // problem message, if any, takes the status line first.
+    if let Some(p) = &path
+        && app.view().status.message.is_none()
+    {
         app.notify(format!("{}: opening files isn't built yet", p.display()));
     }
     // try_init returns an error (no TTY, say) instead of panicking, and installs
     // the panic hook that restores the terminal.
     let mut terminal = ratatui::try_init()?;
-    let result = run(&mut terminal, &mut app);
+    let result = run(&mut terminal, &mut app, &theme);
     ratatui::restore();
     result
 }
 
-fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
-    let theme = ui::Theme::default();
+/// Flavors in the plan (CLAUDE.md) that aren't built yet.
+const PLANNED_FLAVORS: &[&str] = &["obsidian", "mkdocs"];
+
+/// Reads the config layers for an opened path (or the current folder) and
+/// merges them. The flavor name is checked here, by the Markdown crate.
+fn load_config(path: Option<&std::path::Path>) -> (Config, Vec<ConfigError>) {
+    let start = path.unwrap_or_else(|| std::path::Path::new("."));
+    let paths = config::layer_paths(start, |k| std::env::var(k).ok());
+    let (layers, mut errors) = config::read_layers(&paths);
+    let (config, more) = Config::from_layers(&layers);
+    errors.extend(more);
+    if let Some((name, origin)) = &config.flavor
+        && let Err(e) = name.parse::<Flavor>()
+    {
+        // Flavors later in the plan are notes, like other planned settings.
+        let mut problem = origin.error(e);
+        if PLANNED_FLAVORS.contains(&name.to_ascii_lowercase().as_str()) {
+            problem.severity = config::Severity::Note;
+            problem.message = format!("the {name} flavor isn't built yet; using gfm");
+        }
+        errors.push(problem);
+    }
+    // Show paths under the home folder as `~/...`: shorter, and the same as
+    // people write them. Every path a problem can name is rewritten, so one
+    // file never shows under two names.
+    let mut config = config;
+    if let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) {
+        let tilde = |file: &mut std::path::PathBuf| {
+            if let Ok(rest) = file.strip_prefix(&home) {
+                *file = std::path::Path::new("~").join(rest);
+            }
+        };
+        errors.iter_mut().for_each(|e| tilde(&mut e.file));
+        config
+            .bindings
+            .iter_mut()
+            .for_each(|b| tilde(&mut b.origin.file));
+        if let Some((_, origin)) = &mut config.flavor {
+            tilde(&mut origin.file);
+        }
+    }
+    (config, errors)
+}
+
+fn run(terminal: &mut DefaultTerminal, app: &mut App, theme: &ui::Theme) -> io::Result<()> {
     // When a key sequence is ambiguous: the moment its timeout runs out. Other
     // events (resize, focus, unnamed keys) don't push the deadline back.
     let mut deadline: Option<Instant> = None;
     loop {
         let size = terminal.size()?;
         app.resize(size.width, size.height);
-        terminal.draw(|frame| ui::draw(frame, &app.view(), &theme))?;
+        terminal.draw(|frame| ui::draw(frame, &app.view(), theme))?;
         if app.should_quit() {
             return Ok(());
         }

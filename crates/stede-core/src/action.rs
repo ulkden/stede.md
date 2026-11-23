@@ -167,6 +167,24 @@ impl Registry {
         Ok(())
     }
 
+    /// Checks an action's arguments, so a bad one is caught where it's bound
+    /// (with its config file and line) rather than when the key is pressed.
+    /// Built-ins say what they take; user and plugin commands take anything.
+    pub fn check_args(&self, action: &Action) -> Result<(), String> {
+        let Some(spec) = self.get(&action.name) else {
+            return Err(format!("unknown action {:?}", action.name));
+        };
+        if spec.source != Source::Builtin {
+            return Ok(());
+        }
+        match (action.name.as_str(), action.args.as_slice()) {
+            ("pane.toggle", [pane]) => pane.parse::<crate::layout::PaneId>().map(|_| ()),
+            ("pane.toggle", _) => Err("pane.toggle takes one pane: raw, rendered or tree".into()),
+            (_, []) => Ok(()),
+            (name, _) => Err(format!("{name} takes no arguments")),
+        }
+    }
+
     /// Looks up an action by name.
     pub fn get(&self, name: &str) -> Option<&ActionSpec> {
         self.actions.get(name)
@@ -210,6 +228,11 @@ const PROBE: &[Mode] = &[Mode::Probe];
 
 const BUILTINS: &[(&str, &str, &[Mode])] = &[
     ("app.quit", "Quit STEDE.md", EDITOR),
+    (
+        "config.problems",
+        "Show the config problems found at start",
+        EDITOR,
+    ),
     ("help.keys", "Open the key cheat sheet", EDITOR),
     ("modal.close", "Close the top modal", EDITOR),
     ("modal.close_all", "Close every open modal", EDITOR),

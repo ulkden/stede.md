@@ -13,8 +13,7 @@ use ratatui::widgets::{Block, Clear, Paragraph};
 use stede_core::modal::{self, Modal, ModalBody};
 use stede_core::view::{PaneView, STATUS_ROWS, View};
 
-/// Colors for the shell. Step 4 (config and themes) replaces this with theme
-/// slots; until then it uses the 16 ANSI colors, which every terminal has.
+/// The shell's colors, taken from the core's theme slots.
 #[derive(Clone, Copy, Debug)]
 pub struct Theme {
     pub accent: Color,
@@ -28,15 +27,130 @@ pub struct Theme {
 
 impl Default for Theme {
     fn default() -> Self {
-        Self {
-            accent: Color::Cyan,
-            border: Color::DarkGray,
-            strip_fg: Color::Gray,
-            strip_bg: Color::DarkGray,
-            status_fg: Color::Black,
-            status_bg: Color::Cyan,
-            dim: Color::DarkGray,
+        Self::from_core(
+            &stede_core::theme::Theme::default(),
+            ColorSupport::Truecolor,
+        )
+    }
+}
+
+/// What colors the terminal can show.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ColorSupport {
+    /// 24-bit RGB.
+    Truecolor,
+    /// The xterm 256-color palette: RGB is shown as the nearest of those.
+    Indexed256,
+    /// The 16 ANSI colors only (the Linux console, plain `xterm`).
+    Ansi16,
+}
+
+impl ColorSupport {
+    /// Truecolor if `COLORTERM` says so (`truecolor` or `24bit`); 16 colors
+    /// for terminals known to have only those (`TERM` of `linux`, `xterm`,
+    /// `vt100` and the like, or ending in `-16color`/`-8color`); else 256,
+    /// which nearly every terminal has (Terminal.app among them).
+    pub fn detect(colorterm: Option<&str>, term: Option<&str>) -> Self {
+        if matches!(
+            colorterm.map(str::to_ascii_lowercase).as_deref(),
+            Some("truecolor" | "24bit")
+        ) {
+            return ColorSupport::Truecolor;
         }
+        let term = term.unwrap_or_default().to_ascii_lowercase();
+        let low = ["linux", "xterm", "vt100", "vt220", "ansi", "cons25", "dumb"];
+        if low.contains(&term.as_str()) || term.ends_with("-16color") || term.ends_with("-8color") {
+            ColorSupport::Ansi16
+        } else {
+            ColorSupport::Indexed256
+        }
+    }
+}
+
+impl Theme {
+    /// The shell's colors from the core theme.
+    pub fn from_core(theme: &stede_core::theme::Theme, support: ColorSupport) -> Self {
+        let get = |slot| to_color(theme.get(slot), support);
+        Self {
+            accent: get("ui.accent"),
+            border: get("ui.border"),
+            strip_fg: get("ui.strip.fg"),
+            strip_bg: get("ui.strip.bg"),
+            status_fg: get("ui.status.fg"),
+            status_bg: get("ui.status.bg"),
+            dim: get("ui.dim"),
+        }
+    }
+}
+
+/// A theme color as ratatui draws it on this terminal.
+fn to_color(color: stede_core::theme::Color, support: ColorSupport) -> Color {
+    use stede_core::theme::Color as C;
+    match color {
+        C::Default => Color::Reset,
+        C::Ansi(i) => Color::Indexed(i),
+        C::Rgb(r, g, b) => match support {
+            ColorSupport::Truecolor => Color::Rgb(r, g, b),
+            ColorSupport::Indexed256 => Color::Indexed(nearest_256(r, g, b)),
+            ColorSupport::Ansi16 => Color::Indexed(nearest_16(r, g, b)),
+        },
+    }
+}
+
+/// The nearest of the 16 ANSI colors, by xterm's default values.
+fn nearest_16(r: u8, g: u8, b: u8) -> u8 {
+    const ANSI: [(u8, u8, u8); 16] = [
+        (0, 0, 0),
+        (205, 0, 0),
+        (0, 205, 0),
+        (205, 205, 0),
+        (0, 0, 238),
+        (205, 0, 205),
+        (0, 205, 205),
+        (229, 229, 229),
+        (127, 127, 127),
+        (255, 0, 0),
+        (0, 255, 0),
+        (255, 255, 0),
+        (92, 92, 255),
+        (255, 0, 255),
+        (0, 255, 255),
+        (255, 255, 255),
+    ];
+    let d = |a: u8, b: u8| (i32::from(a) - i32::from(b)).pow(2);
+    (0..16u8)
+        .min_by_key(|&i| {
+            let (x, y, z) = ANSI[usize::from(i)];
+            d(x, r) + d(y, g) + d(z, b)
+        })
+        .expect("sixteen colors")
+}
+
+/// The nearest xterm-256 color: the 6x6x6 cube (16-231) or the gray ramp
+/// (232-255), whichever is closer. The first 16 are left out: terminals
+/// remap them, so they aren't a fixed target.
+fn nearest_256(r: u8, g: u8, b: u8) -> u8 {
+    const STEPS: [u8; 6] = [0, 95, 135, 175, 215, 255];
+    let level = |v: u8| -> usize {
+        (0..6)
+            .min_by_key(|&i| (i32::from(STEPS[i]) - i32::from(v)).abs())
+            .expect("six steps")
+    };
+    let (ri, gi, bi) = (level(r), level(g), level(b));
+    let cube = (16 + 36 * ri + 6 * gi + bi) as u8;
+    let dist = |(x, y, z): (u8, u8, u8)| {
+        let d = |a: u8, b: u8| (i32::from(a) - i32::from(b)).pow(2);
+        d(x, r) + d(y, g) + d(z, b)
+    };
+    let cube_rgb = (STEPS[ri], STEPS[gi], STEPS[bi]);
+    let avg = (u16::from(r) + u16::from(g) + u16::from(b)) / 3;
+    // Grays 232-255 are 8, 18, ..., 238.
+    let gray_i = (avg.saturating_sub(3) / 10).min(23) as u8;
+    let gray_v = 8 + 10 * gray_i;
+    if dist((gray_v, gray_v, gray_v)) < dist(cube_rgb) {
+        232 + gray_i
+    } else {
+        cube
     }
 }
 
@@ -250,6 +364,7 @@ mod tests {
                 tree_folded: true,
                 ..LayoutOptions::default()
             },
+            ..AppOptions::default()
         });
         insta::assert_snapshot!(render(&mut app, 60, 8));
     }
@@ -297,6 +412,43 @@ mod tests {
         assert!(screen.contains("<F1>      help.keys"), "{screen}");
         press(&mut app, "k");
         assert_ne!(render(&mut app, 80, 16), screen, "one k moves the view");
+    }
+
+    #[test]
+    fn colors_downgrade_without_truecolor() {
+        assert_eq!(
+            ColorSupport::detect(Some("truecolor"), Some("xterm-kitty")),
+            ColorSupport::Truecolor
+        );
+        assert_eq!(
+            ColorSupport::detect(Some("24BIT"), None),
+            ColorSupport::Truecolor
+        );
+        assert_eq!(
+            ColorSupport::detect(None, Some("xterm-256color")),
+            ColorSupport::Indexed256
+        );
+        assert_eq!(
+            ColorSupport::detect(None, Some("linux")),
+            ColorSupport::Ansi16
+        );
+        assert_eq!(
+            ColorSupport::detect(None, Some("rxvt-16color")),
+            ColorSupport::Ansi16
+        );
+        assert_eq!(nearest_16(250, 10, 10), 9);
+        assert_eq!(nearest_16(10, 10, 10), 0);
+        let t = Theme::from_core(&stede_core::theme::Theme::default(), ColorSupport::Ansi16);
+        assert!(matches!(t.accent, Color::Indexed(i) if i < 16));
+        assert_eq!(nearest_256(0, 0, 0), 16);
+        assert_eq!(nearest_256(255, 255, 255), 231);
+        assert_eq!(nearest_256(255, 0, 0), 196);
+        assert_eq!(nearest_256(128, 128, 128), 244);
+        let core = stede_core::theme::Theme::default();
+        let t = Theme::from_core(&core, ColorSupport::Indexed256);
+        assert!(matches!(t.accent, Color::Indexed(_)));
+        let t = Theme::from_core(&core, ColorSupport::Truecolor);
+        assert!(matches!(t.accent, Color::Rgb(..)));
     }
 
     #[test]

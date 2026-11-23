@@ -9,18 +9,18 @@
 //! like any other key: leaving is the `probe.quit` action (`qq` by default).
 
 use std::io::{self, Write};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{self, Event};
 use ratatui::crossterm::terminal;
 use ratatui::text::Line;
 use stede_core::action::Registry;
+use stede_core::config::{Config, ConfigError};
 use stede_core::key::{Key, format_keys};
 use stede_core::keymap::{Context, Keymap, Mode, Resolver, Scope, Step};
 use stede_core::layout::PaneId;
 
 use crate::input::to_key;
-use stede_core::app::DEFAULT_KEY_TIMEOUT;
 
 /// The samples, each a label and the bytes that draw it.
 fn samples() -> Vec<(&'static str, String)> {
@@ -98,11 +98,15 @@ impl ProbeKeys {
         modal: None,
     };
 
-    fn new() -> Self {
-        Self {
-            keymap: Keymap::defaults(&Registry::with_builtins()),
+    /// The probe keymap: defaults plus `[keys.probe]` from config. Problems
+    /// with those bindings are returned for the caller to show.
+    fn new(config: &Config) -> (Self, Vec<ConfigError>) {
+        let (keymap, errors) = Keymap::from_config(&Registry::with_builtins(), config);
+        let keys = Self {
+            keymap,
             resolver: Resolver::new(),
-        }
+        };
+        (keys, errors)
     }
 
     /// The keys bound to `probe.quit`. Probe bindings are global only (the
@@ -134,8 +138,11 @@ impl ProbeKeys {
 }
 
 /// Runs the probe. The `probe.quit` action (`qq` by default) leaves.
-pub fn run() -> io::Result<()> {
-    let mut keys = ProbeKeys::new();
+pub fn run(config: &Config, config_errors: &[ConfigError]) -> io::Result<()> {
+    let (mut keys, key_errors) = ProbeKeys::new(config);
+    for problem in config_errors.iter().chain(&key_errors) {
+        eprintln!("stede: {problem}");
+    }
     // With no way out, raw mode would trap the shell: refuse to start.
     let quit = keys.quit_keys().ok_or_else(|| {
         io::Error::other("no key is bound to probe.quit, so the probe couldn't be left")
@@ -164,7 +171,7 @@ pub fn run() -> io::Result<()> {
     out.flush()?;
 
     let _raw = RawMode::enable()?;
-    echo_keys(&mut out, &mut keys)?;
+    echo_keys(&mut out, &mut keys, config.key_timeout)?;
     writeln!(out)?;
     Ok(())
 }
@@ -188,7 +195,7 @@ impl Drop for RawMode {
 
 /// Echoes each key event raw (what the terminal sent and what STEDE.md
 /// makes of it), then resolves it through the probe keymap.
-fn echo_keys(out: &mut impl Write, keys: &mut ProbeKeys) -> io::Result<()> {
+fn echo_keys(out: &mut impl Write, keys: &mut ProbeKeys, timeout: Duration) -> io::Result<()> {
     let mut deadline: Option<Instant> = None;
     loop {
         let event = match deadline {
@@ -221,7 +228,7 @@ fn echo_keys(out: &mut impl Write, keys: &mut ProbeKeys) -> io::Result<()> {
         };
         match outcome {
             Some(Probe::Quit) => return Ok(()),
-            Some(Probe::Wait) => deadline = Some(Instant::now() + DEFAULT_KEY_TIMEOUT),
+            Some(Probe::Wait) => deadline = Some(Instant::now() + timeout),
             Some(Probe::Continue) => deadline = None,
             None => {}
         }
@@ -234,7 +241,7 @@ mod tests {
 
     #[test]
     fn quit_goes_through_the_probe_keymap() {
-        let mut keys = ProbeKeys::new();
+        let (mut keys, _) = ProbeKeys::new(&Config::default());
         assert_eq!(
             keys.quit_keys().map(|k| format_keys(&k)).as_deref(),
             Some("qq")
