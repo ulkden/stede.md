@@ -505,18 +505,27 @@ mod tests {
     fn listing_a_folder_is_not_a_change() {
         let dir = temp("quiet");
         std::fs::write(dir.join("a.md"), "a").unwrap();
+        // FSEvents (macOS) has latency and can still deliver the write above
+        // after watching starts; let it settle first.
+        std::thread::sleep(Duration::from_millis(1000));
         let (sink, rx) = collecting();
         let services = Services::start(sink).unwrap();
         for _ in 0..3 {
             services.handle(Request::ListDir(dir.clone()));
             std::thread::sleep(Duration::from_millis(100));
         }
-        // Listings come back, but reading the folder reports no change.
-        let mut changed = false;
+        // The regression: reading the folder (an access) reported the folder
+        // itself as changed, so every listing asked for another.
+        let mut folder_changed = false;
         while let Ok(e) = rx.recv_timeout(Duration::from_millis(600)) {
-            changed |= matches!(e, ServiceEvent::Changed(_));
+            if let ServiceEvent::Changed(paths) = e {
+                folder_changed |= paths.contains(&dir);
+            }
         }
-        assert!(!changed, "listing a folder must not report it changed");
+        assert!(
+            !folder_changed,
+            "listing a folder must not report it changed"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
