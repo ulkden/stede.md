@@ -17,7 +17,7 @@ use stede_core::modal::{self, Modal, ModalBody};
 use stede_core::text::wrap_rows;
 
 pub use crate::rendered::RenderCache;
-use stede_core::view::{PaneView, RawView, STATUS_ROWS, TreeView, View};
+use stede_core::view::{PaneView, RawView, STATUS_ROWS, SearchView, TreeView, View};
 
 /// The shell's colors, taken from the core's theme slots.
 #[derive(Clone, Copy, Debug)]
@@ -36,6 +36,8 @@ pub struct Theme {
     pub quote: Color,
     pub rule: Color,
     pub meta: Color,
+    pub search_match: Color,
+    pub search_current: Color,
 }
 
 impl Default for Theme {
@@ -99,6 +101,8 @@ impl Theme {
             quote: get("md.quote"),
             rule: get("md.rule"),
             meta: get("md.meta"),
+            search_match: get("search.match"),
+            search_current: get("search.current"),
         }
     }
 }
@@ -271,9 +275,57 @@ fn draw_pane(
     frame.render_widget(block, rect);
     match pane.id {
         PaneId::Tree => draw_tree(frame, inner, &view.tree, pane.focused, theme),
-        PaneId::Raw => draw_raw(frame, inner, &view.raw, theme),
+        PaneId::Raw => draw_raw(frame, inner, &view.raw, view.search, theme),
         PaneId::Rendered => draw_rendered(frame, inner, view, cache, theme),
     }
+}
+
+/// A row with every search match's background lit: `current` uses the
+/// brighter slot. Matches are found in the row as drawn, so they follow
+/// wrapping and tab expansion.
+fn highlight(row: Line<'static>, regex: &regex::Regex, color: Color) -> Line<'static> {
+    let text: String = row.spans.iter().map(|s| s.content.as_ref()).collect();
+    let ranges: Vec<(usize, usize)> = regex
+        .find_iter(&text)
+        .filter(|m| m.start() < m.end())
+        .map(|m| (m.start(), m.end()))
+        .collect();
+    if ranges.is_empty() {
+        return row;
+    }
+    let mut out: Vec<Span<'static>> = Vec::new();
+    let mut offset = 0;
+    for span in row.spans {
+        let content = span.content.to_string();
+        let (start, end) = (offset, offset + content.len());
+        offset = end;
+        // Cut points inside this span: match edges that fall within it.
+        let mut cuts: Vec<usize> = ranges
+            .iter()
+            .flat_map(|&(a, b)| [a, b])
+            .filter(|&c| c > start && c < end)
+            .map(|c| c - start)
+            .collect();
+        cuts.sort_unstable();
+        cuts.dedup();
+        let mut last = 0;
+        for cut in cuts.into_iter().chain(std::iter::once(content.len())) {
+            if cut <= last || !content.is_char_boundary(cut) {
+                continue;
+            }
+            let piece = &content[last..cut];
+            let at = start + last;
+            let lit = ranges.iter().any(|&(a, b)| at >= a && at < b);
+            let style = if lit {
+                span.style.bg(color)
+            } else {
+                span.style
+            };
+            out.push(Span::styled(piece.to_owned(), style));
+            last = cut;
+        }
+    }
+    Line::from(out)
 }
 
 /// The rendered pane: the laid-out blocks from the core's position.
@@ -295,21 +347,47 @@ fn draw_rendered(frame: &mut Frame, area: Rect, view: &View, cache: &RenderCache
     }
     let (block, row) = view.rendered.position;
     let height = usize::from(area.height);
+    // The block holding the current match's line is lit brighter.
+    let current_block = view.search.and_then(|s| {
+        let line = s.current_line?;
+        view.rendered
+            .model?
+            .blocks
+            .iter()
+            .position(|b| b.source.contains(line))
+    });
     let lines: Vec<Line> = cache
         .blocks
         .iter()
+        .enumerate()
         .skip(block)
-        .flatten()
+        .flat_map(|(i, rows)| rows.iter().map(move |r| (i, r)))
         .skip(row)
         .take(height)
-        .cloned()
+        .map(|(i, r)| match view.search {
+            Some(s) => {
+                let color = if current_block == Some(i) {
+                    theme.search_current
+                } else {
+                    theme.search_match
+                };
+                highlight(r.clone(), s.regex, color)
+            }
+            None => r.clone(),
+        })
         .collect();
     frame.render_widget(Paragraph::new(lines), area);
 }
 
 /// The raw pane: the file's lines from the top of the view, wrapped to the
 /// pane, with an optional number column; each line colored by its block.
-fn draw_raw(frame: &mut Frame, area: Rect, raw: &RawView, theme: &Theme) {
+fn draw_raw(
+    frame: &mut Frame,
+    area: Rect,
+    raw: &RawView,
+    search: Option<SearchView>,
+    theme: &Theme,
+) {
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -347,7 +425,16 @@ fn draw_raw(frame: &mut Frame, area: Rect, raw: &RawView, theme: &Theme) {
                     Style::new().fg(theme.linenr),
                 ));
             }
-            spans.push(Span::styled(row, style));
+            let mut text = Line::from(Span::styled(row, style));
+            if let Some(s) = search {
+                let color = if s.current_line == Some(*number) {
+                    theme.search_current
+                } else {
+                    theme.search_match
+                };
+                text = highlight(text, s.regex, color);
+            }
+            spans.extend(text.spans);
             lines.push(Line::from(spans));
         }
     }
@@ -430,6 +517,15 @@ fn draw_tree(frame: &mut Frame, area: Rect, tree: &TreeView, focused: bool, them
 }
 
 fn draw_status(frame: &mut Frame, area: Rect, view: &View, theme: &Theme) {
+    // Typing a search: the pattern takes the line, with a cursor after it.
+    if let Some(prompt) = &view.status.prompt {
+        let line = Line::from(vec![
+            Span::raw(prompt.clone()),
+            Span::styled(" ", Style::new().add_modifier(Modifier::REVERSED)),
+        ]);
+        frame.render_widget(Paragraph::new(line), area);
+        return;
+    }
     let mode = Span::styled(
         format!(" {} ", view.status.mode.to_uppercase()),
         Style::new()
@@ -440,6 +536,12 @@ fn draw_status(frame: &mut Frame, area: Rect, view: &View, theme: &Theme) {
     let mut spans = vec![mode];
     if !view.status.pending.is_empty() {
         spans.push(Span::raw(format!(" {}", view.status.pending)));
+    }
+    if let Some((at, of)) = view.search.and_then(|s| s.position) {
+        spans.push(Span::styled(
+            format!(" [{at}/{of}]"),
+            Style::new().fg(theme.accent),
+        ));
     }
     // The message first: it's what needs reading now, and the file name
     // after it can be cut at the edge without losing much.
@@ -919,6 +1021,52 @@ mod tests {
         render(&mut app, 80, 12);
         press(&mut app, "<C-l>6G");
         assert_eq!(app.view().raw.lines[0].0, 6);
+    }
+
+    #[test]
+    fn search_prompt_and_lit_matches() {
+        let mut app = App::new(AppOptions {
+            file: Some("/n/a.md".into()),
+            ..AppOptions::default()
+        });
+        open_doc(&mut app, "# Alpha\n\nalpha beta ALPHA\n\ngamma\n");
+        render(&mut app, 80, 8);
+        press(&mut app, "/alp");
+        insta::assert_snapshot!("search_prompt", render(&mut app, 80, 8));
+        press(&mut app, "<CR>");
+        let mut terminal = draw_only(&mut app, 80, 8);
+        let buffer = terminal.backend_mut().buffer().clone();
+        // Smart case: all three "alpha"s, in both panes, have a lit background.
+        let lit = (0..buffer.area.height)
+            .flat_map(|y| (0..buffer.area.width).map(move |x| (x, y)))
+            .filter(|&(x, y)| buffer[(x, y)].bg != ratatui::style::Color::Reset)
+            .count();
+        assert!(lit >= 5 * 5, "lit cells: {lit}");
+        insta::assert_snapshot!("search_found", render(&mut app, 80, 8));
+    }
+
+    #[test]
+    fn highlight_splits_spans_at_match_edges() {
+        let row = Line::from(vec![
+            Span::raw("ab"),
+            Span::styled("cd", Style::new().fg(Color::Red)),
+        ]);
+        let regex = regex::Regex::new("bc").unwrap();
+        let lit = highlight(row, &regex, Color::Blue);
+        let pieces: Vec<(&str, Option<Color>)> = lit
+            .spans
+            .iter()
+            .map(|s| (s.content.as_ref(), s.style.bg))
+            .collect();
+        assert_eq!(
+            pieces,
+            vec![
+                ("a", None),
+                ("b", Some(Color::Blue)),
+                ("c", Some(Color::Blue)),
+                ("d", None)
+            ]
+        );
     }
 
     #[test]

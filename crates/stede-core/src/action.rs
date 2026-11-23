@@ -223,7 +223,8 @@ fn valid_name(name: &str) -> bool {
 /// An action is listed here only once something can run it (the core, or a
 /// front end for its own screens such as `probe.*`), so the cheat sheet never
 /// offers a key that does nothing.
-const EDITOR: &[Mode] = &Mode::EDITOR;
+const EDITOR: &[Mode] = &[Mode::Normal];
+const SEARCH: &[Mode] = &[Mode::Search];
 const PROBE: &[Mode] = &[Mode::Probe];
 
 const BUILTINS: &[(&str, &str, &[Mode])] = &[
@@ -258,6 +259,32 @@ const BUILTINS: &[(&str, &str, &[Mode])] = &[
         "pane.toggle",
         "Fold or open a pane: raw, rendered or tree",
         EDITOR,
+    ),
+    (
+        "search.forward",
+        "Search forward: type a pattern, Enter to go",
+        EDITOR,
+    ),
+    (
+        "search.backward",
+        "Search backward: type a pattern, Enter to go",
+        EDITOR,
+    ),
+    ("search.next", "Go to the next match", EDITOR),
+    ("search.prev", "Go to the previous match", EDITOR),
+    ("search.off", "Clear search highlights", EDITOR),
+    ("search.confirm", "Search for the pattern typed", SEARCH),
+    ("search.cancel", "Stop typing a search", SEARCH),
+    (
+        "search.backspace",
+        "Delete the last character of the pattern",
+        SEARCH,
+    ),
+    ("search.clear", "Clear the pattern", SEARCH),
+    (
+        "search.insert",
+        "Type into the pattern (any printable key)",
+        SEARCH,
     ),
     ("view.down", "Scroll down a line", EDITOR),
     ("view.up", "Scroll up a line", EDITOR),

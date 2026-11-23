@@ -1,0 +1,12 @@
+---
+source: crates/stede-tui/src/ui.rs
+expression: "render(&mut app, 80, 8)"
+---
+"┌ Raw: a.md ───────────────────┐┌ Rendered ────────────────────┐┌ Files ───────┐"
+"│1 # Alpha                     ││Alpha                         ││              │"
+"│2                             ││━━━━━                         ││              │"
+"│3 alpha beta ALPHA            ││                              ││              │"
+"│4                             ││alpha beta ALPHA              ││              │"
+"│5 gamma                       ││                              ││              │"
+"└──────────────────────────────┘└──────────────────────────────┘└──────────────┘"
+"/alp                                                                            "

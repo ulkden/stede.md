@@ -34,6 +34,7 @@ notify = "8.2.2"
 comrak = { version = "0.59.0", default-features = false }
 insta = "1.49.0"
 ratatui = "0.30.2"
+regex = "1.13.1"
 unicode-width = "0.2.3"
 tokio = { version = "1.54.1", features = ["rt-multi-thread"] }
 toml_edit = { version = "0.25.19", default-features = false, features = ["parse"] }

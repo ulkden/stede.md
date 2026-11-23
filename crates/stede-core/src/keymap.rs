@@ -21,6 +21,9 @@ use crate::modal::ModalKind;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Mode {
     Normal,
+    /// Typing a search pattern on the status line. Printable keys with no
+    /// binding type into it (the `search.insert` action).
+    Search,
     /// `stede --probe`: every key is echoed, and these bindings still apply.
     Probe,
 }
@@ -29,15 +32,16 @@ impl Mode {
     /// Every mode, including Probe, which isn't an editor mode: code that
     /// lists the editor's modes (cheat sheets, the status line) should use
     /// [`Mode::EDITOR`].
-    pub const ALL: [Mode; 2] = [Mode::Normal, Mode::Probe];
+    pub const ALL: [Mode; 3] = [Mode::Normal, Mode::Search, Mode::Probe];
 
     /// The modes the editor itself runs in.
-    pub const EDITOR: [Mode; 1] = [Mode::Normal];
+    pub const EDITOR: [Mode; 2] = [Mode::Normal, Mode::Search];
 
     /// The name used in config tables (`[keys.normal]`) and the status line.
     pub fn name(self) -> &'static str {
         match self {
             Mode::Normal => "normal",
+            Mode::Search => "search",
             Mode::Probe => "probe",
         }
     }
@@ -469,7 +473,7 @@ impl Resolver {
     }
 }
 
-use Mode::{Normal, Probe};
+use Mode::{Normal, Probe, Search};
 use Scope::{Global, Modal, OutputModal, Pane};
 
 /// The built-in bindings: mode, scope, keys, action.
@@ -494,6 +498,20 @@ const DEFAULT_BINDINGS: &[(Mode, Scope, &str, &str)] = &[
     (Normal, Modal, "<C-c>", "modal.close_all"),
     (Probe, Global, "qq", "probe.quit"),
     (Normal, Global, "<leader>n", "line_numbers.toggle"),
+    (Normal, Global, "<leader>h", "search.off"),
+    (Normal, Pane(PaneId::Raw), "/", "search.forward"),
+    (Normal, Pane(PaneId::Raw), "?", "search.backward"),
+    (Normal, Pane(PaneId::Raw), "n", "search.next"),
+    (Normal, Pane(PaneId::Raw), "N", "search.prev"),
+    (Normal, Pane(PaneId::Rendered), "/", "search.forward"),
+    (Normal, Pane(PaneId::Rendered), "?", "search.backward"),
+    (Normal, Pane(PaneId::Rendered), "n", "search.next"),
+    (Normal, Pane(PaneId::Rendered), "N", "search.prev"),
+    (Search, Global, "<CR>", "search.confirm"),
+    (Search, Global, "<Esc>", "search.cancel"),
+    (Search, Global, "<BS>", "search.backspace"),
+    (Search, Global, "<C-h>", "search.backspace"),
+    (Search, Global, "<C-u>", "search.clear"),
     (Normal, Pane(PaneId::Raw), "j", "view.down"),
     (Normal, Pane(PaneId::Raw), "<Down>", "view.down"),
     (Normal, Pane(PaneId::Raw), "k", "view.up"),

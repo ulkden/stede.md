@@ -111,6 +111,11 @@ pub const SLOTS: &[(&str, &str)] = &[
     ("md.quote", "Block quotes and alerts"),
     ("md.rule", "Thematic breaks and table borders"),
     ("md.meta", "Front matter and raw HTML"),
+    ("search.match", "Behind search matches"),
+    (
+        "search.current",
+        "Behind matches on the current match's line",
+    ),
 ];
 
 /// A complete theme: a color for every slot.
@@ -148,6 +153,8 @@ impl Theme {
                 ("md.quote", "#bb9af7"),
                 ("md.rule", "#565f89"),
                 ("md.meta", "#737aa2"),
+                ("search.match", "#3d59a1"),
+                ("search.current", "#ff9e64"),
             ],
             "light" => &[
                 ("ui.accent", "#2e5ab8"),
@@ -164,6 +171,8 @@ impl Theme {
                 ("md.quote", "#7847bd"),
                 ("md.rule", "#8990b3"),
                 ("md.meta", "#6172b0"),
+                ("search.match", "#b6c4f0"),
+                ("search.current", "#f5b97a"),
             ],
             _ => return None,
         };
