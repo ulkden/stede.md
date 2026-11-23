@@ -1,0 +1,2 @@
+A plain text file.
+It shows as one code block in the rendered pane.

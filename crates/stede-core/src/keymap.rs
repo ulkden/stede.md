@@ -603,6 +603,20 @@ mod tests {
     }
 
     #[test]
+    fn both_reader_panes_scroll_with_the_same_keys() {
+        let keys = |pane| {
+            let mut v: Vec<(&str, &str)> = DEFAULT_BINDINGS
+                .iter()
+                .filter(|(m, s, _, a)| *m == Normal && *s == Pane(pane) && a.starts_with("view."))
+                .map(|(_, _, k, a)| (*k, *a))
+                .collect();
+            v.sort();
+            v
+        };
+        assert_eq!(keys(PaneId::Raw), keys(PaneId::Rendered));
+    }
+
+    #[test]
     fn defaults_bind_registered_actions() {
         let (r, k) = setup();
         assert!(k.bindings().all(|b| r.contains(&b.action.name)));
