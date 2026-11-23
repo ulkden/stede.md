@@ -1,0 +1,31 @@
+# Daily check of the pinned Cargo.lock against the RustSec advisory database,
+# so a new advisory shows up without waiting for a push.
+name: Security audit
+
+on:
+  schedule:
+    - cron: "17 5 * * *"
+  push:
+    paths: ["Cargo.lock", "deny.toml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  advisories:
+    name: RustSec advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-deny@0.20.2
+      - run: cargo deny --locked check advisories

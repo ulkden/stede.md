@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Fast checks before each commit. Enable with `just install-hooks`.
+# Skip once with `git commit --no-verify`.
+set -euo pipefail
+
+cargo fmt --all --check
+if command -v typos >/dev/null; then
+    typos
+fi

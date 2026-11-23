@@ -44,22 +44,24 @@ Planned crates and their reasons are in the "Recommended stack" table in `docs/a
 - Screens are tested with `insta` snapshots on ratatui's `TestBackend`.
 - Config is TOML, merged in layers: defaults, user file, `.stede/config.toml`, `.stede/local.toml`, profile, session `:set`. Unknown keys and errors report file, line and key.
 - Wide characters count by display width (CJK, emoji) wherever text is aligned.
+- Dependencies are pinned: `Cargo.lock` with `--locked`, `rust-toolchain.toml`, and actions by commit SHA. New releases wait 14 days; patch and security fixes may come in at once. Add crates to `[workspace.dependencies]`. See "Dependencies" in `CONTRIBUTING.md`.
 
 ## Commands
 
+Tasks live in the `justfile`, and CI runs the same recipes. Setup and the full list are in `CONTRIBUTING.md`.
+
 ```sh
-cargo build                 # default members only
-cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
-cargo fmt --all
-cargo deny check            # licenses, advisories, sources
+just setup                  # pinned toolchain and dev tools
+just ci                     # everything CI runs: fmt, clippy, tests, docs, deny, layers, typos, MSRV
+just fmt                    # cargo fmt --all
+just layers                 # headless crates must not depend on UI crates
 cargo run -p stede-tui      # runs `stede`
 ```
 
 ## Roadmap
 
 1. **Phase 0, spike:** prove the risky parts: comrak source positions driving scroll sync, kitty text sizing and Sixel in target terminals, key handling in Windows Terminal under WSL.
-2. **Phase 1, Reader:** open a folder, file tree, rendered pane, scroll sync, search, themes, config layers. Gate: the GFM spec files render correctly.
+2. **Phase 1, Reader:** open a folder, file tree, rendered pane, scroll sync, search, themes, config layers. Gate: the GFM spec files render correctly. Exit deliverables: a manual UX test plan for the reader and a first draft of end-user docs for what phase 1 ships.
 3. **Phase 2, Writer:** Vim engine, keymaps, save, undo tree, linter adapter, clipboard (OSC 52). Gate: the user uses it daily for their own docs.
 4. **Phase 3, Extend:** external commands and hooks, profiles, more flavors, templates, Steel plugins starting with the table builder. Gate: core API frozen.
 5. **Phase 4, Native window.**

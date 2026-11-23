@@ -6,10 +6,13 @@ all-features = true
 
 [advisories]
 version = 2
+yanked = "deny"
 
 [licenses]
 version = 2
 confidence-threshold = 0.9
+# The allow list is policy, set ahead of the crates that need it.
+unused-allowed-license = "allow"
 allow = [
     "MIT",
     "MIT-0",
