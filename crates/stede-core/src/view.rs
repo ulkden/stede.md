@@ -21,6 +21,8 @@ pub struct View<'a> {
     pub tree: TreeView,
     /// The raw pane's content.
     pub raw: RawView<'a>,
+    /// The rendered pane's content.
+    pub rendered: RenderedView<'a>,
     /// Open modals, bottom first. Draw them all, top last.
     pub modals: Vec<&'a Modal>,
     /// The key bound to `modal.close`, for modal footers ("Esc to close").
@@ -73,6 +75,20 @@ pub struct RawView<'a> {
     pub message: Option<String>,
     /// Changes when the document is loaded again.
     pub generation: u64,
+}
+
+/// What the rendered pane shows: the render model, from a block and a row
+/// within it. The front end lays the model out and reports block heights
+/// back (`App::set_rendered_layout`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RenderedView<'a> {
+    pub model: Option<&'a crate::render::RenderModel>,
+    /// Changes when the document is loaded again: lay it out again.
+    pub generation: u64,
+    /// The top block and how many of its rows are scrolled past.
+    pub position: (usize, usize),
+    /// Whether the core has a layout for this document yet.
+    pub laid_out: bool,
 }
 
 /// What the file tree pane shows.

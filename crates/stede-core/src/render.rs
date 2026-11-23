@@ -98,9 +98,12 @@ pub enum Marker {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Container {
     Quote,
+    /// `continuation` is false on the alert's first block (draw its label)
+    /// and true after, so two alerts side by side each get their label.
     Alert {
         kind: AlertKind,
         title: Option<String>,
+        continuation: bool,
     },
     /// `continuation` is false on the item's first block (draw the marker or
     /// task box) and true on the blocks after it (draw only the indent).

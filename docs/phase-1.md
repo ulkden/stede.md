@@ -29,7 +29,7 @@ Each step is one PR through the `stede-pr-review` loop. Tick a step when its PR 
   - The tree pane's keys
   - Watch for changes, polling on `/mnt/*` in WSL
   - Reload config live when a config file is saved (step 4 reads it once at start)
-- [ ] **6a. Opening files and the raw pane**
+- [x] **6a. Opening files and the raw pane**
   - Files read and parsed off the input loop; reloaded when they change on disk
   - The raw pane, read-only for now, with line numbers and highlighting by block
   - Scrolling keys
