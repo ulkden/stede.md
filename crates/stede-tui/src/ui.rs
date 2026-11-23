@@ -14,7 +14,7 @@ use stede_core::App;
 use stede_core::doc::LineKind;
 use stede_core::layout::PaneId;
 use stede_core::modal::{self, Modal, ModalBody};
-use stede_core::text::wrap_rows;
+use stede_core::text::wrap_rows_mapped;
 
 pub use crate::rendered::RenderCache;
 use stede_core::view::{PaneView, RawView, STATUS_ROWS, SearchView, TreeView, View};
@@ -280,6 +280,37 @@ fn draw_pane(
     }
 }
 
+/// A raw row split into runs, lit where a character's source byte falls in
+/// a match.
+fn lit_by_offset(
+    row: &str,
+    offsets: &[usize],
+    ranges: &[(usize, usize)],
+    style: Style,
+    color: Color,
+) -> Vec<Span<'static>> {
+    if ranges.is_empty() {
+        return vec![Span::styled(row.to_owned(), style)];
+    }
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut run = String::new();
+    let mut run_lit = false;
+    for (c, &at) in row.chars().zip(offsets) {
+        let lit = ranges.iter().any(|&(a, b)| at >= a && at < b);
+        if lit != run_lit && !run.is_empty() {
+            let s = if run_lit { style.bg(color) } else { style };
+            spans.push(Span::styled(std::mem::take(&mut run), s));
+        }
+        run_lit = lit;
+        run.push(c);
+    }
+    if !run.is_empty() {
+        let s = if run_lit { style.bg(color) } else { style };
+        spans.push(Span::styled(run, s));
+    }
+    spans
+}
+
 /// A row with every search match's background lit: `current` uses the
 /// brighter slot. Matches are found in the row as drawn, so they follow
 /// wrapping and tab expansion.
@@ -411,8 +442,21 @@ fn draw_raw(
         let style = line_style(*kind, theme);
         // The first line may be scrolled into; only the rows that fit are built.
         let skip = if i == 0 { raw.first_row } else { 0 };
-        let rows = wrap_rows(text, text_width, skip, height - lines.len());
-        for (r, row) in rows.into_iter().enumerate() {
+        // Matches are found in the whole source line (as the core finds
+        // them), then lit where its characters are drawn.
+        let ranges: Vec<(usize, usize)> = search.map_or_else(Vec::new, |s| {
+            s.regex
+                .find_iter(text)
+                .filter(|m| m.start() < m.end())
+                .map(|m| (m.start(), m.end()))
+                .collect()
+        });
+        let color = match search {
+            Some(s) if s.current_line == Some(*number) => theme.search_current,
+            _ => theme.search_match,
+        };
+        let rows = wrap_rows_mapped(text, text_width, skip, height - lines.len());
+        for (r, (row, offsets)) in rows.into_iter().enumerate() {
             let mut spans = Vec::with_capacity(2);
             if gutter > 0 {
                 let label = if r + skip == 0 {
@@ -425,16 +469,7 @@ fn draw_raw(
                     Style::new().fg(theme.linenr),
                 ));
             }
-            let mut text = Line::from(Span::styled(row, style));
-            if let Some(s) = search {
-                let color = if s.current_line == Some(*number) {
-                    theme.search_current
-                } else {
-                    theme.search_match
-                };
-                text = highlight(text, s.regex, color);
-            }
-            spans.extend(text.spans);
+            spans.extend(lit_by_offset(&row, &offsets, &ranges, style, color));
             lines.push(Line::from(spans));
         }
     }
@@ -537,9 +572,12 @@ fn draw_status(frame: &mut Frame, area: Rect, view: &View, theme: &Theme) {
     if !view.status.pending.is_empty() {
         spans.push(Span::raw(format!(" {}", view.status.pending)));
     }
-    if let Some((at, of)) = view.search.and_then(|s| s.position) {
+    if let Some(s) = view.search
+        && let Some((at, of)) = s.position
+    {
+        let more = if s.capped { "+" } else { "" };
         spans.push(Span::styled(
-            format!(" [{at}/{of}]"),
+            format!(" [{at}/{of}{more}]"),
             Style::new().fg(theme.accent),
         ));
     }
@@ -1043,6 +1081,27 @@ mod tests {
             .count();
         assert!(lit >= 5 * 5, "lit cells: {lit}");
         insta::assert_snapshot!("search_found", render(&mut app, 80, 8));
+    }
+
+    #[test]
+    fn raw_matches_light_across_a_wrap() {
+        let mut app = App::new(AppOptions {
+            file: Some("/n/a.md".into()),
+            ..AppOptions::default()
+        });
+        // The raw pane's text is 28 cells wide: "hello world" breaks after "hello".
+        let line = format!("{}hello world", "x".repeat(23));
+        open_doc(&mut app, &format!("{line}\n"));
+        render(&mut app, 80, 8);
+        press(&mut app, "/hello world<CR>");
+        let mut terminal = draw_only(&mut app, 80, 8);
+        let buffer = terminal.backend_mut().buffer().clone();
+        let lit = |y: u16| {
+            (1..31u16)
+                .filter(|&x| buffer[(x, y)].bg != ratatui::style::Color::Reset)
+                .count()
+        };
+        assert_eq!(lit(1) + lit(2), "hello world".len(), "lit on both rows");
     }
 
     #[test]

@@ -91,6 +91,8 @@ pub struct SearchView<'a> {
     pub current_line: Option<usize>,
     /// The current match's place and the count, such as `(3, 12)`.
     pub position: Option<(usize, usize)>,
+    /// Whether the count stopped at its cap: show it as "at least".
+    pub capped: bool,
 }
 
 impl PartialEq for SearchView<'_> {
@@ -98,6 +100,7 @@ impl PartialEq for SearchView<'_> {
         self.regex.as_str() == other.regex.as_str()
             && self.current_line == other.current_line
             && self.position == other.position
+            && self.capped == other.capped
     }
 }
 

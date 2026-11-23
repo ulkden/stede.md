@@ -399,6 +399,11 @@ impl Resolver {
     }
 
     /// What has been typed toward a binding so far, such as `3g`.
+    /// The keys typed toward a binding so far.
+    pub fn pending_keys(&self) -> &[Key] {
+        &self.pending
+    }
+
     pub fn pending(&self) -> String {
         let count = self.count.map(|c| c.to_string()).unwrap_or_default();
         format!("{count}{}", format_keys(&self.pending))

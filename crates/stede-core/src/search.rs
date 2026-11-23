@@ -5,6 +5,23 @@
 //! case doesn't matter. A pattern that isn't a valid regex is searched as
 //! plain text, so a stray `(` still finds itself.
 
+/// The longest pattern typed: each key recompiles it and rescans the file.
+pub const MAX_PATTERN: usize = 1024;
+
+/// Matches kept at most, so a one-letter pattern in a huge log can't stall
+/// typing; the count then shows as "at least".
+pub const MAX_MATCHES: usize = 100_000;
+
+/// How a pattern was compiled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Compiled {
+    Regex,
+    /// It wasn't a valid regex, so it's searched as plain text.
+    Literal,
+    /// Valid, but too big to compile: it matches nothing.
+    TooBig,
+}
+
 use regex::{Regex, RegexBuilder};
 
 /// Which way `n` goes.
@@ -28,16 +45,46 @@ pub struct Search {
     pub pattern: String,
     pub direction: Direction,
     regex: Regex,
-    /// Whether the pattern wasn't a valid regex and is searched as text.
-    pub literal: bool,
+    pub compiled: Compiled,
     matches: Vec<Match>,
+    /// Whether matches stopped at [`MAX_MATCHES`].
+    pub capped: bool,
     current: Option<usize>,
 }
 
+/// Whether a pattern has a capital letter the user typed to match: letters
+/// in escapes (`\W`, `\p{Lu}`) don't count, as in Vim's smartcase.
+fn has_capital(pattern: &str) -> bool {
+    let mut chars = pattern.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            if let Some('p' | 'P') = chars.next() {
+                let mut rest = chars.clone();
+                if rest.next() == Some('{') {
+                    chars = rest;
+                    chars.by_ref().find(|&c| c == '}');
+                } else {
+                    chars.next();
+                }
+            }
+            continue;
+        }
+        if c.is_uppercase() {
+            return true;
+        }
+    }
+    false
+}
+
+/// A regex that matches nothing.
+fn nothing() -> Regex {
+    Regex::new(r"[^\s\S]").expect("an empty class is a valid regex")
+}
+
 /// Builds the regex for a pattern: smart case, and plain text if the
-/// pattern doesn't parse. Returns the regex and whether it fell back.
-pub fn compile(pattern: &str) -> (Regex, bool) {
-    let ignore_case = !pattern.chars().any(char::is_uppercase);
+/// pattern doesn't parse.
+pub fn compile(pattern: &str) -> (Regex, Compiled) {
+    let ignore_case = !has_capital(pattern);
     let build = |p: &str| {
         RegexBuilder::new(p)
             .case_insensitive(ignore_case)
@@ -46,11 +93,12 @@ pub fn compile(pattern: &str) -> (Regex, bool) {
             .build()
     };
     match build(pattern) {
-        Ok(regex) => (regex, false),
-        Err(_) => (
-            build(&regex::escape(pattern)).expect("an escaped pattern is valid"),
-            true,
-        ),
+        Ok(regex) => (regex, Compiled::Regex),
+        Err(regex::Error::CompiledTooBig(_)) => (nothing(), Compiled::TooBig),
+        Err(_) => match build(&regex::escape(pattern)) {
+            Ok(regex) => (regex, Compiled::Literal),
+            Err(_) => (nothing(), Compiled::TooBig),
+        },
     }
 }
 
@@ -61,13 +109,14 @@ impl Search {
         direction: Direction,
         lines: impl Iterator<Item = &'a str>,
     ) -> Self {
-        let (regex, literal) = compile(pattern);
+        let (regex, compiled) = compile(pattern);
         let mut search = Self {
             pattern: pattern.to_owned(),
             direction,
             regex,
-            literal,
+            compiled,
             matches: Vec::new(),
+            capped: false,
             current: None,
         };
         search.rescan(lines);
@@ -78,11 +127,16 @@ impl Search {
     pub fn rescan<'a>(&mut self, lines: impl Iterator<Item = &'a str>) {
         self.matches.clear();
         self.current = None;
-        if self.pattern.is_empty() {
+        self.capped = false;
+        if self.pattern.is_empty() || self.compiled == Compiled::TooBig {
             return;
         }
         for (i, line) in lines.enumerate() {
             for m in self.regex.find_iter(line) {
+                if self.matches.len() == MAX_MATCHES {
+                    self.capped = true;
+                    return;
+                }
                 // An empty match (`a*`) would light nothing; skip it.
                 if m.start() < m.end() {
                     self.matches.push(Match {
@@ -105,6 +159,12 @@ impl Search {
 
     pub fn current(&self) -> Option<Match> {
         self.current.map(|i| self.matches[i])
+    }
+
+    /// Forgets the current match, so the next step starts from a line
+    /// (the view was scrolled away from it).
+    pub fn clear_current(&mut self) {
+        self.current = None;
     }
 
     /// The current match's place and the count, such as `(3, 12)` (1-based).
@@ -196,10 +256,10 @@ mod tests {
     #[test]
     fn regex_and_literal_fallback() {
         let s = search("a.p");
-        assert!(!s.literal);
+        assert_eq!(s.compiled, Compiled::Regex);
         assert_eq!(s.matches().len(), 3);
         let s = Search::new("(x", Direction::Forward, ["a(x)b"].into_iter());
-        assert!(s.literal);
+        assert_eq!(s.compiled, Compiled::Literal);
         assert_eq!(
             s.matches(),
             &[Match {
@@ -213,6 +273,33 @@ mod tests {
             search("z*").matches().is_empty(),
             "empty matches are skipped"
         );
+    }
+
+    #[test]
+    fn escapes_do_not_turn_off_smart_case() {
+        let s = Search::new(r"\Wfoo", Direction::Forward, [" Foo"].into_iter());
+        assert_eq!(s.matches().len(), 1);
+        let s = Search::new(r"\p{Greek}x", Direction::Forward, ["αX"].into_iter());
+        assert_eq!(s.matches().len(), 1);
+        assert_eq!(
+            search(r"\WAlpha").matches().len(),
+            0,
+            "a typed capital still counts"
+        );
+    }
+
+    #[test]
+    fn huge_patterns_and_match_counts_are_bounded() {
+        // Too big even as plain text: no panic, no matches.
+        let long = "ab".repeat(20_000);
+        let s = Search::new(&long, Direction::Forward, [long.as_str()].into_iter());
+        assert_eq!(s.compiled, Compiled::TooBig);
+        assert!(s.matches().is_empty());
+        assert_eq!(compile(r"\w{100}{100}").1, Compiled::TooBig);
+        let text = "e".repeat(MAX_MATCHES + 10);
+        let s = Search::new("e", Direction::Forward, [text.as_str()].into_iter());
+        assert_eq!(s.matches().len(), MAX_MATCHES);
+        assert!(s.capped);
     }
 
     #[test]

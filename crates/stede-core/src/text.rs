@@ -15,39 +15,60 @@ pub const TAB_STOP: usize = 4;
 /// cells. Only those rows are built, and the scan stops after the last one,
 /// so a huge single line costs only as far as the rows asked for.
 pub fn wrap_rows(line: &str, width: usize, skip: usize, take: usize) -> Vec<String> {
+    wrap_rows_mapped(line, width, skip, take)
+        .into_iter()
+        .map(|(row, _)| row)
+        .collect()
+}
+
+/// [`wrap_rows`], with the byte offset in `line` of each character of each
+/// row (a tab's spaces all point at the tab), so matches found in the
+/// source line can be lit where they're drawn.
+pub fn wrap_rows_mapped(
+    line: &str,
+    width: usize,
+    skip: usize,
+    take: usize,
+) -> Vec<(String, Vec<usize>)> {
     let width = width.max(1);
     let end = skip.saturating_add(take);
     let mut rows = Vec::new();
     let mut row = 0;
-    let mut current = String::new();
+    let mut current = (String::new(), Vec::new());
     let mut col = 0;
     // The column in the whole line, which tab stops count from (rows wrap).
     let mut line_col = 0;
-    let mut place =
-        |shown: char, w: usize, row: &mut usize, col: &mut usize, current: &mut String| -> bool {
-            if *col + w > width && *col > 0 {
-                if *row >= skip {
-                    rows.push(std::mem::take(current));
-                }
-                current.clear();
-                *row += 1;
-                *col = 0;
-                if *row >= end {
-                    return false;
-                }
-            }
+    let mut place = |shown: char,
+                     at: usize,
+                     w: usize,
+                     row: &mut usize,
+                     col: &mut usize,
+                     current: &mut (String, Vec<usize>)|
+     -> bool {
+        if *col + w > width && *col > 0 {
+            let full = std::mem::take(current);
             if *row >= skip {
-                current.push(shown);
+                rows.push(full);
             }
-            *col += w;
-            true
-        };
-    for c in line.chars() {
+            *row += 1;
+            *col = 0;
+            if *row >= end {
+                return false;
+            }
+        }
+        if *row >= skip {
+            current.0.push(shown);
+            current.1.push(at);
+        }
+        *col += w;
+        true
+    };
+    for (at, c) in line.char_indices() {
         if c == '\t' {
             let spaces = TAB_STOP - line_col % TAB_STOP;
             line_col += spaces;
             for _ in 0..spaces {
-                if !place(' ', 1, &mut row, &mut col, &mut current) {
+                if !place(' ', at, 1, &mut row, &mut col, &mut current) {
                     return rows;
                 }
             }
@@ -56,7 +77,7 @@ pub fn wrap_rows(line: &str, width: usize, skip: usize, take: usize) -> Vec<Stri
         let shown = if c.is_control() { '\u{FFFD}' } else { c };
         let w = UnicodeWidthChar::width(shown).unwrap_or(0);
         line_col += w;
-        if !place(shown, w, &mut row, &mut col, &mut current) {
+        if !place(shown, at, w, &mut row, &mut col, &mut current) {
             return rows;
         }
     }
@@ -69,6 +90,14 @@ pub fn wrap_rows(line: &str, width: usize, skip: usize, take: usize) -> Vec<Stri
 /// Every row of `line` wrapped to `width`. At least one: an empty line takes a row.
 pub fn wrap(line: &str, width: usize) -> Vec<String> {
     wrap_rows(line, width, 0, usize::MAX)
+}
+
+/// The wrapped row (0-based) that the character at byte `at` of `line`
+/// is drawn on, at `width`.
+pub fn row_at(line: &str, width: usize, at: usize) -> usize {
+    let at = at.min(line.len());
+    let end = line[at..].chars().next().map_or(at, |c| at + c.len_utf8());
+    row_count(&line[..end], width) - 1
 }
 
 /// How many rows `line` takes at `width`, without building them.
@@ -128,6 +157,18 @@ mod tests {
         for (l, w) in [("", 3), ("ab日本", 3), ("\t\tx", 5), ("abcdefg\tx", 6)] {
             assert_eq!(row_count(l, w), wrap(l, w).len(), "{l:?} at {w}");
         }
+    }
+
+    #[test]
+    fn rows_map_back_to_source_bytes() {
+        let rows = wrap_rows_mapped("a\tb日c", 4, 0, 9);
+        assert_eq!(rows[0], ("a   ".to_owned(), vec![0, 1, 1, 1]));
+        assert_eq!(rows[1], ("b日c".to_owned(), vec![2, 3, 6]));
+        assert_eq!(row_at("abcdefg", 3, 0), 0);
+        assert_eq!(row_at("abcdefg", 3, 3), 1);
+        assert_eq!(row_at("abcdefg", 3, 6), 2);
+        // A wide character that wraps whole is on the next row.
+        assert_eq!(row_at("ab日", 3, 2), 1);
     }
 
     #[test]

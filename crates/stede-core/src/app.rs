@@ -16,7 +16,7 @@ use crate::key::{Key, format_keys};
 use crate::keymap::{Context, Keymap, Mode, Resolver, Scope, Step};
 use crate::layout::{Layout, LayoutOptions, PaneId};
 use crate::modal::{Modal, ModalBody, ModalStack, Row, Section};
-use crate::search::{Direction, Search};
+use crate::search::{Compiled, Direction, MAX_PATTERN, Search};
 use crate::sync::Rendered;
 use crate::tree::Tree;
 use crate::view::{
@@ -28,6 +28,16 @@ const CHEAT_SHEET_ID: &str = "help.keys";
 
 /// Identifies the config problems modal, so a reload replaces it.
 const CONFIG_PROBLEMS_ID: &str = "config.problems";
+
+/// The character a key types into a prompt, if it types one.
+fn printable(key: Key) -> Option<char> {
+    match key.code() {
+        crate::key::KeyCode::Char(c) if !key.mods().ctrl && !key.mods().alt && !c.is_control() => {
+            Some(c)
+        }
+        _ => None,
+    }
+}
 
 /// Blocks longer than this many source lines sync by line share instead of
 /// wrapped rows, so a key never walks thousands of lines.
@@ -98,6 +108,9 @@ pub struct App {
     /// The pattern being typed, and the search in force before it began
     /// (kept for Esc).
     prompt: Option<(Direction, String, Option<Search>)>,
+    /// Where the last search jump left the raw pane: `n` steps on from the
+    /// current match only while the view is still there.
+    search_at: Option<(usize, usize)>,
     /// The line-numbers setting config last gave, so a reload that didn't
     /// change it keeps the session's `<leader>n` choice.
     config_line_numbers: Option<bool>,
@@ -134,6 +147,7 @@ impl App {
             rendered: Rendered::default(),
             search: None,
             prompt: None,
+            search_at: None,
         };
         if let Some(root) = options.root {
             let (tree, first) = Tree::new(root, options.file.clone());
@@ -305,10 +319,13 @@ impl App {
                             .map_or((0, 0), Doc::position);
                         self.doc = Some(Doc::new(document, self.loads));
                         // Matches move with the text.
-                        if let (Some(search), Some(doc)) = (self.search.as_mut(), self.doc.as_ref())
-                        {
-                            search.rescan(Self::doc_lines(doc));
+                        if let Some(doc) = self.doc.as_ref() {
+                            let before = self.prompt.as_mut().and_then(|p| p.2.as_mut());
+                            for search in self.search.iter_mut().chain(before) {
+                                search.rescan(Self::doc_lines(doc));
+                            }
                         }
+                        self.search_at = None;
                         let (_, width) = self.raw_columns();
                         let height = self.raw_height();
                         if let Some(doc) = self.doc.as_mut() {
@@ -411,24 +428,41 @@ impl App {
 
     /// Handles one key press.
     pub fn handle_key(&mut self, key: Key) -> Handled {
+        self.leave_covered_search();
+        let mut keys = self.resolver.pending_keys().to_vec();
+        keys.push(key);
         let ctx = self.context();
         let step = self.resolver.feed(&self.keymap, ctx, key);
-        // Typing a pattern: a printable key with no binding types itself.
-        if self.mode == Mode::Search
-            && let Step::Unbound(_) = step
-            && let crate::key::KeyCode::Char(c) = key.code()
-            && !key.mods().ctrl
-            && !key.mods().alt
-            && !c.is_control()
-        {
-            let insert = Action {
-                name: "search.insert".into(),
-                args: vec![c.to_string()],
-            };
-            return self.apply(Step::Run {
-                action: insert,
-                count: None,
-            });
+        self.type_or_apply(step, &keys)
+    }
+
+    /// A modal opened over the search prompt (a config reload's problems):
+    /// drop the pattern, so the modal's keys work.
+    fn leave_covered_search(&mut self) {
+        if self.mode == Mode::Search && !self.layout.modals().is_empty() {
+            if let Some((_, _, before)) = self.prompt.take() {
+                self.search = before;
+            }
+            self.mode = Mode::Normal;
+            self.resolver.reset();
+        }
+    }
+
+    /// Typing a pattern: keys that ended up bound to nothing (a lone letter,
+    /// or the start of a longer binding that didn't follow) type themselves.
+    fn type_or_apply(&mut self, step: Step, keys: &[Key]) -> Handled {
+        if self.mode == Mode::Search && matches!(step, Step::Unbound(_)) {
+            let typed: String = keys.iter().filter_map(|k| printable(*k)).collect();
+            if !typed.is_empty() {
+                let insert = Action {
+                    name: "search.insert".into(),
+                    args: vec![typed],
+                };
+                return self.apply(Step::Run {
+                    action: insert,
+                    count: None,
+                });
+            }
         }
         self.apply(step)
     }
@@ -451,18 +485,34 @@ impl App {
         let Some(doc) = self.doc.as_ref() else {
             return Err("no file open".into());
         };
-        let (top, _) = doc.position();
+        let here = doc.position();
         let Some(search) = self.search.as_mut() else {
             return Err("no search yet: / to start one".into());
         };
+        // Scrolled away since the last jump: search from the view, not from
+        // the old match (forward, a match on the top line counts).
+        let moved = self.search_at != Some(here);
+        if moved {
+            search.clear_current();
+        }
+        let inclusive = inclusive || (moved && direction == Direction::Forward);
         let pattern = search.pattern.clone();
-        let Some((m, wrapped)) = search.step(top, direction, inclusive) else {
+        if search.compiled == Compiled::TooBig {
+            return Err("search pattern too big to compile".into());
+        }
+        let Some((m, wrapped)) = search.step(here.0, direction, inclusive) else {
             return Err(format!("pattern not found: {pattern}"));
         };
         let (_, width) = self.raw_columns();
         let height = self.raw_height();
         if let Some(doc) = self.doc.as_mut() {
-            doc.set_position(m.line, 0, width, height);
+            // The match's wrapped row, so a match deep in a long paragraph line
+            // is on screen.
+            let row = doc
+                .line(m.line)
+                .map_or(0, |l| crate::text::row_at(l, width, m.start));
+            doc.set_position(m.line, row, width, height);
+            self.search_at = Some(doc.position());
         }
         self.rendered_follow_raw();
         if wrapped {
@@ -476,9 +526,11 @@ impl App {
 
     /// Call when [`key_timeout`](Self::key_timeout) passes after a pending key.
     pub fn handle_timeout(&mut self) -> Handled {
+        self.leave_covered_search();
+        let keys = self.resolver.pending_keys().to_vec();
         let ctx = self.context();
         match self.resolver.timeout(&self.keymap, ctx) {
-            Some(step) => self.apply(step),
+            Some(step) => self.type_or_apply(step, &keys),
             None => Handled {
                 redraw: true,
                 wait: false,
@@ -607,7 +659,12 @@ impl App {
             }
             "search.insert" => {
                 if let (Some((_, text, _)), Some(c)) = (self.prompt.as_mut(), action.arg()) {
-                    text.push_str(c);
+                    let room = MAX_PATTERN.saturating_sub(text.chars().count());
+                    text.extend(c.chars().take(room));
+                    if c.chars().count() > room {
+                        self.message =
+                            Some(format!("search patterns stop at {MAX_PATTERN} characters"));
+                    }
                 }
                 self.search_preview();
             }
@@ -641,7 +698,10 @@ impl App {
                         self.search_step(direction, false)?;
                     }
                     Some((direction, _, _)) => {
-                        let literal = self.search.as_ref().is_some_and(|s| s.literal);
+                        let literal = self
+                            .search
+                            .as_ref()
+                            .is_some_and(|s| s.compiled == Compiled::Literal);
                         // A new pattern finds from here: a match on the top line counts.
                         self.search_step(direction, true)?;
                         if literal && self.message.is_none() {
@@ -1014,6 +1074,7 @@ impl App {
                 .keys_for(self.mode, Scope::Modal, "modal.close")
                 .map(|keys| format_keys(&keys)),
             search: self.search.as_ref().map(|s| SearchView {
+                capped: s.capped,
                 regex: s.regex(),
                 current_line: s.current().map(|m| m.line + 1),
                 position: s.position(),
@@ -1748,6 +1809,94 @@ mod tests {
         assert_eq!(app.view().status.prompt.as_deref(), Some("/line 4"));
         press(&mut app, "<C-u>target 2<CR>");
         assert_eq!(app.view().search.unwrap().current_line, Some(20));
+    }
+
+    #[test]
+    fn a_modal_over_the_prompt_takes_the_keys() {
+        use crate::config::{Config, Layer};
+        let mut app = search_app();
+        press(&mut app, "/targ");
+        let (config, errors) = Config::from_layers(&[Layer {
+            path: "c.toml".into(),
+            text: "[ui]\nbogus = 1\n".into(),
+        }]);
+        app.apply_config(&config, &errors);
+        assert!(app.modals().is_open());
+        press(&mut app, "<Esc>");
+        assert!(!app.modals().is_open(), "Esc closes the modal");
+        assert_eq!(app.view().status.mode, "normal");
+        assert_eq!(app.view().status.prompt, None);
+    }
+
+    #[test]
+    fn a_reload_mid_prompt_rescans_the_earlier_search() {
+        let mut app = search_app();
+        press(&mut app, "/target<CR>/");
+        let text: String = (1..=40)
+            .map(|i| {
+                if i % 10 == 5 {
+                    format!("target {i}\n")
+                } else {
+                    format!("line {i}\n")
+                }
+            })
+            .collect();
+        opened(&mut app, "/p/a.md", &text);
+        // Esc brings back /target, its matches found in the new text: n goes
+        // on from the view (line 10) to the new match on 15.
+        press(&mut app, "<Esc>n");
+        assert_eq!(app.view().search.unwrap().current_line, Some(15));
+        assert_eq!(app.view().search.unwrap().position, Some((2, 4)));
+    }
+
+    #[test]
+    fn n_searches_from_where_the_view_was_scrolled() {
+        let mut app = search_app();
+        press(&mut app, "/target<CR>");
+        assert_eq!(app.view().search.unwrap().current_line, Some(10));
+        press(&mut app, "25gg");
+        press(&mut app, "n");
+        assert_eq!(app.view().search.unwrap().current_line, Some(30));
+        press(&mut app, "gg15jN");
+        assert_eq!(app.view().search.unwrap().current_line, Some(10));
+    }
+
+    #[test]
+    fn a_match_deep_in_a_long_line_is_on_screen() {
+        let mut app = App::new(AppOptions {
+            file: Some("/p/a.md".into()),
+            ..AppOptions::default()
+        });
+        app.resize(80, 12);
+        let long = format!("{} needle end", "word ".repeat(600));
+        opened(&mut app, "/p/a.md", &format!("{long}\n\nafter\n"));
+        press(&mut app, "/needle<CR>");
+        let view = app.view();
+        let (_, width) = app.raw_columns();
+        let at = long.find("needle").unwrap();
+        let row = crate::text::row_at(&long, width, at);
+        assert!(row > 20, "the match is deep in the line");
+        // The match's row is drawn: the first row shown is at most it.
+        assert!(view.raw.first_row <= row && row < view.raw.first_row + 10);
+    }
+
+    #[test]
+    fn keys_of_an_unfinished_binding_type_themselves() {
+        use crate::config::{Config, Layer};
+        let mut app = search_app();
+        let (config, errors) = Config::from_layers(&[Layer {
+            path: "c.toml".into(),
+            text: "[keys.search]\njk = \"search.cancel\"\n".into(),
+        }]);
+        assert!(errors.is_empty(), "{errors:?}");
+        app.apply_config(&config, &errors);
+        press(&mut app, "/major");
+        assert_eq!(app.view().status.prompt.as_deref(), Some("/major"));
+        press(&mut app, "j");
+        app.handle_timeout();
+        assert_eq!(app.view().status.prompt.as_deref(), Some("/majorj"));
+        press(&mut app, "jk");
+        assert_eq!(app.view().status.mode, "normal");
     }
 
     #[test]
