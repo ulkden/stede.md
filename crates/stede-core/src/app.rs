@@ -125,7 +125,12 @@ impl App {
         let app = self;
         let all: Vec<&crate::config::ConfigError> =
             config_errors.iter().chain(&key_errors).collect();
-        if !all.is_empty() {
+        if all.is_empty() {
+            // A clean reload clears the "config error(s)" hint.
+            if app.config_problems.is_none() {
+                app.message = None;
+            }
+        } else {
             use crate::config::Severity;
             let errors = all.iter().filter(|e| e.severity == Severity::Error).count();
             let notes = all.len() - errors;
@@ -161,7 +166,11 @@ impl App {
     pub fn handle_event(&mut self, event: ServiceEvent) -> Handled {
         match event {
             ServiceEvent::Listed { dir, result } => {
-                let known = self.tree.listed(&dir, result);
+                let forgotten = self.tree.listed(&dir, result);
+                let known = forgotten.is_some();
+                for gone in forgotten.into_iter().flatten() {
+                    self.outbox.push(Request::Unwatch(gone));
+                }
                 self.rescroll_tree();
                 Handled {
                     redraw: known,
@@ -401,7 +410,6 @@ impl App {
         self.layout.modals_mut().open(sheet);
     }
 
-    /// The view model for the screen size last passed to [`resize`](Self::resize).
     /// Opens the selected tree entry: a folder opens or closes, a file is
     /// handed to the services to load.
     fn tree_open(&mut self) -> Result<(), String> {
@@ -425,6 +433,7 @@ impl App {
         Ok(())
     }
 
+    /// The view model for the screen size last passed to [`resize`](Self::resize).
     pub fn view(&self) -> View<'_> {
         let width = self.screen.0;
         let focus = self.layout.focus();
@@ -866,6 +875,43 @@ mod tests {
         let (config, errors) = bad("");
         app.apply_config(&config, &errors);
         assert!(!app.modals().is_open(), "fixed: the stale list goes");
+    }
+
+    #[test]
+    fn a_clean_reload_clears_old_problems_everywhere() {
+        use crate::config::{Config, Layer};
+        let layer = |t: &str| Layer {
+            path: "c.toml".into(),
+            text: t.into(),
+        };
+        let mut app = App::new(AppOptions::default());
+        let (config, errors) = Config::from_layers(&[layer("[ui]\nbogus = 1\n")]);
+        app.apply_config(&config, &errors);
+        press(&mut app, "<Esc>");
+        let (config, errors) = Config::from_layers(&[layer("")]);
+        app.apply_config(&config, &errors);
+        assert_eq!(app.view().status.message, None);
+        press(&mut app, "<leader>o");
+        assert!(!app.modals().is_open(), "the stale list can't be reopened");
+    }
+
+    #[test]
+    fn removed_folders_are_unwatched() {
+        let mut app = tree_app();
+        press(&mut app, "l");
+        app.take_requests();
+        app.handle_event(ServiceEvent::Listed {
+            dir: "/p/docs".into(),
+            result: Ok(vec![]),
+        });
+        app.handle_event(ServiceEvent::Listed {
+            dir: "/p".into(),
+            result: Ok(vec![entry("/p/a.md", false)]),
+        });
+        assert_eq!(
+            app.take_requests(),
+            vec![Request::Unwatch("/p/docs".into())]
+        );
     }
 
     #[test]

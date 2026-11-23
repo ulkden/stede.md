@@ -179,9 +179,15 @@ impl ModalStack {
 
     /// Closes every open modal with this id, wherever it sits. Returns
     /// whether one was open.
+    ///
+    /// The remembered output (for `reopen_last`) goes too, if it's that modal:
+    /// what was removed shouldn't come back.
     pub fn remove(&mut self, id: &str) -> bool {
         let before = self.stack.len();
         self.stack.retain(|m| m.id != Some(id));
+        if self.last_output.as_ref().is_some_and(|m| m.id == Some(id)) {
+            self.last_output = None;
+        }
         self.stack.len() != before
     }
 

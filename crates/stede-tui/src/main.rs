@@ -105,7 +105,8 @@ fn open(path: Option<PathBuf>) -> io::Result<()> {
         // looking like a missing path.
         Some(p) => match std::fs::metadata(p) {
             Ok(meta) => {
-                let abs = std::path::absolute(p)?;
+                // `..` resolved, so the tree's title and paths read cleanly.
+                let abs = config::lexical_normal(&std::path::absolute(p)?);
                 if meta.is_file() {
                     let parent = abs
                         .parent()
@@ -124,7 +125,7 @@ fn open(path: Option<PathBuf>) -> io::Result<()> {
             }
             Err(e) => return Err(io::Error::new(e.kind(), format!("{}: {e}", p.display()))),
         },
-        None => (std::env::current_dir()?, None),
+        None => (config::lexical_normal(&std::env::current_dir()?), None),
     };
     let (config, config_errors) = load_config(path.as_deref());
     let mut theme = theme_for(&config);
@@ -146,8 +147,17 @@ fn open(path: Option<PathBuf>) -> io::Result<()> {
     thread::Builder::new()
         .name("stede-input".into())
         .spawn(move || {
-            while let Ok(event) = event::read() {
-                if input_tx.send(AppEvent::Input(event)).is_err() {
+            loop {
+                let event = match event::read() {
+                    Ok(event) => AppEvent::Input(event),
+                    // Pass the error on, so the app exits with it rather than
+                    // waiting forever for keys that can't come.
+                    Err(e) => {
+                        let _ = input_tx.send(AppEvent::InputError(e));
+                        break;
+                    }
+                };
+                if input_tx.send(event).is_err() {
                     break;
                 }
             }
@@ -170,6 +180,8 @@ fn open(path: Option<PathBuf>) -> io::Result<()> {
 /// What the loop waits on.
 enum AppEvent {
     Input(Event),
+    /// Reading the terminal failed; the input thread has stopped.
+    InputError(io::Error),
     Service(ServiceEvent),
 }
 
@@ -282,6 +294,7 @@ fn run(
             }
             // Resize and other input: just draw again.
             Some(AppEvent::Input(_)) => None,
+            Some(AppEvent::InputError(e)) => return Err(e),
             Some(AppEvent::Service(ServiceEvent::ConfigChanged { layers, errors })) => {
                 // Live reload: the services read the layers again; merging
                 // them is pure. Problems show as at start.

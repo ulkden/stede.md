@@ -79,15 +79,21 @@ impl Tree {
     }
 
     /// A listing arrived. Returns true if it was for a folder the tree knows.
-    pub fn listed(&mut self, dir: &Path, result: Result<Vec<Entry>, String>) -> bool {
-        let Some(slot) = self.listings.get_mut(dir) else {
-            return false;
-        };
+    /// A listing arrived. Returns `None` for a folder the tree doesn't know;
+    /// otherwise the folders it forgot because they went away (to stop
+    /// watching them).
+    pub fn listed(
+        &mut self,
+        dir: &Path,
+        result: Result<Vec<Entry>, String>,
+    ) -> Option<Vec<PathBuf>> {
+        let slot = self.listings.get_mut(dir)?;
         *slot = match result {
             Ok(entries) => Listing::Loaded(entries),
             Err(e) => Listing::Failed(e),
         };
         // Entries that went away take their open state and listings with them.
+        let mut forgotten = Vec::new();
         if let Listing::Loaded(entries) = &self.listings[dir] {
             let present: HashSet<&Path> = entries.iter().map(|e| e.path.as_path()).collect();
             let gone: Vec<PathBuf> = self
@@ -97,10 +103,10 @@ impl Tree {
                 .cloned()
                 .collect();
             for p in gone {
-                self.forget(&p);
+                forgotten.extend(self.forget(&p));
             }
         }
-        true
+        Some(forgotten)
     }
 
     /// Folders among `changed` (or the folders holding them) that the tree
@@ -120,9 +126,17 @@ impl Tree {
     }
 
     /// Drops a folder (and everything under it) from the tree's state.
-    fn forget(&mut self, dir: &Path) {
+    /// Returns the folders whose listings it dropped.
+    fn forget(&mut self, dir: &Path) -> Vec<PathBuf> {
+        let dropped: Vec<PathBuf> = self
+            .listings
+            .keys()
+            .filter(|p| p.starts_with(dir))
+            .cloned()
+            .collect();
         self.listings.retain(|p, _| !p.starts_with(dir));
         self.expanded.retain(|p| !p.starts_with(dir));
+        dropped
     }
 
     /// The visible rows, in order.
@@ -197,7 +211,11 @@ impl Tree {
     /// Opens a closed folder. Returns the folder to list if it hasn't been.
     pub fn expand(&mut self, dir: &Path) -> Option<PathBuf> {
         self.expanded.insert(dir.to_path_buf());
-        if self.listings.contains_key(dir) {
+        // A failed listing is tried again: the folder may be readable now.
+        if matches!(
+            self.listings.get(dir),
+            Some(Listing::Loaded(_) | Listing::Loading)
+        ) {
             None
         } else {
             self.listings.insert(dir.to_path_buf(), Listing::Loading);
@@ -379,6 +397,31 @@ mod tests {
     #[test]
     fn listings_for_unknown_folders_are_ignored() {
         let mut t = sample();
-        assert!(!t.listed(Path::new("/elsewhere"), Ok(vec![])));
+        assert!(t.listed(Path::new("/elsewhere"), Ok(vec![])).is_none());
+    }
+
+    #[test]
+    fn failed_folders_are_tried_again_on_open() {
+        let mut t = sample();
+        t.expand(Path::new("/p/docs"));
+        t.listed(Path::new("/p/docs"), Err("EIO".into()));
+        t.collapse(Path::new("/p/docs"));
+        assert_eq!(t.expand(Path::new("/p/docs")), Some("/p/docs".into()));
+    }
+
+    #[test]
+    fn forgotten_folders_are_reported() {
+        let mut t = sample();
+        t.expand(Path::new("/p/docs"));
+        t.listed(Path::new("/p/docs"), Ok(vec![entry("/p/docs/sub", true)]));
+        t.expand(Path::new("/p/docs/sub"));
+        let mut gone = t
+            .listed(Path::new("/p"), Ok(vec![entry("/p/a.md", false)]))
+            .unwrap();
+        gone.sort();
+        assert_eq!(
+            gone,
+            vec![PathBuf::from("/p/docs"), PathBuf::from("/p/docs/sub")]
+        );
     }
 }

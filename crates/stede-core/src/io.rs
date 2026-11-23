@@ -23,6 +23,8 @@ pub struct Entry {
 pub enum Request {
     /// List a folder's entries (respecting `.gitignore`), and watch it.
     ListDir(PathBuf),
+    /// Stop watching a folder the tree no longer shows (it was removed).
+    Unwatch(PathBuf),
     /// The user opened a file. Showing it in the panes comes with the
     /// reader panes (phase 1 step 6).
     OpenFile(PathBuf),

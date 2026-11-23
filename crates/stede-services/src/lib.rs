@@ -4,8 +4,9 @@
 //! linter hub and external commands.
 //!
 //! Work runs on a tokio runtime (`spawn_blocking` for file system calls,
-//! watching included) and reports back through a sink the front end
-//! provides, so nothing here blocks the input loop. No UI code here.
+//! watching and the change debouncer included) and reports back through a
+//! sink the front end provides, so nothing here blocks the input loop. No
+//! UI code here.
 
 mod files;
 
@@ -16,7 +17,6 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::thread;
 use std::time::{Duration, Instant};
 
 use notify::{PollWatcher, RecommendedWatcher, RecursiveMode, Watcher};
@@ -54,10 +54,12 @@ struct Shared {
 
 /// File watchers, made on first use.
 struct Watch {
-    events: mpsc::Sender<notify::Result<notify::Event>>,
+    /// `None` once the services shut down: with it and the watchers gone,
+    /// the debouncer's channel closes and it ends.
+    events: Option<mpsc::Sender<notify::Result<notify::Event>>>,
     native: Option<RecommendedWatcher>,
     poll: Option<PollWatcher>,
-    /// Each watched folder's resolved path to the path as given. Watchers
+    /// Each watched folder, as given, to its resolved path. Watchers
     /// (FSEvents on macOS) may report resolved paths, such as
     /// `/private/tmp/...` for `/tmp/...`; events are mapped back with this.
     resolved: HashMap<PathBuf, PathBuf>,
@@ -74,7 +76,7 @@ impl Services {
         let shared = Arc::new(Shared {
             sink,
             watch: Mutex::new(Watch {
-                events,
+                events: Some(events),
                 native: None,
                 poll: None,
                 resolved: HashMap::new(),
@@ -83,10 +85,9 @@ impl Services {
             inflight: Mutex::new(HashMap::new()),
         });
         {
+            // A long-running blocking task: the debouncer waits on a channel.
             let shared = Arc::clone(&shared);
-            thread::Builder::new()
-                .name("stede-watch".into())
-                .spawn(move || debounce(&raw, &shared))?;
+            runtime.spawn_blocking(move || debounce(&raw, &shared));
         }
         Ok(Self {
             runtime: Some(runtime),
@@ -115,6 +116,11 @@ impl Services {
                 self.runtime()
                     .spawn_blocking(move || shared.list_until_settled(dir));
             }
+            Request::Unwatch(dir) => {
+                let shared = Arc::clone(&self.shared);
+                self.runtime()
+                    .spawn_blocking(move || shared.unwatch_dir(&dir));
+            }
             // Loading files into the panes comes with the reader panes.
             Request::OpenFile(_) => {}
         }
@@ -135,6 +141,14 @@ impl Drop for Services {
     fn drop(&mut self) {
         // Don't wait for listings stuck on a slow or hung mount: quitting
         // must not hang after the terminal is restored.
+        // Stop watching: dropping the watchers and the last sender closes
+        // the debouncer's channel, so it ends instead of calling a sink whose
+        // front end is gone.
+        if let Ok(mut watch) = self.shared.watch.lock() {
+            watch.native = None;
+            watch.poll = None;
+            watch.events = None;
+        }
         if let Some(runtime) = self.runtime.take() {
             runtime.shutdown_background();
         }
@@ -175,12 +189,16 @@ impl Shared {
 
     fn watch_dir(&self, dir: &Path) {
         let resolved = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+        // The resolved path decides: a symlink into `/mnt/c` needs polling.
+        let poll = needs_polling(&resolved);
         let mut watch = self.watch.lock().expect("watch lock");
-        watch.resolved.insert(resolved, dir.to_path_buf());
-        let events = watch.events.clone();
+        let Some(events) = watch.events.clone() else {
+            return;
+        };
+        watch.resolved.insert(dir.to_path_buf(), resolved);
         // A folder that can't be watched still lists; it just won't refresh
         // on its own until it's listed (and watched) again.
-        if needs_polling(dir) {
+        if poll {
             if watch.poll.is_none() {
                 let config = notify::Config::default().with_poll_interval(POLL_INTERVAL);
                 watch.poll = PollWatcher::new(events, config).ok();
@@ -198,24 +216,36 @@ impl Shared {
         }
     }
 
-    /// A watcher's path as the tree knows it: a resolved prefix is mapped
-    /// back to the path that was watched.
-    fn as_given(&self, path: PathBuf) -> PathBuf {
-        let watch = self.watch.lock().expect("watch lock");
-        if watch.resolved.values().any(|given| path.starts_with(given)) {
-            return path;
+    fn unwatch_dir(&self, dir: &Path) {
+        let mut watch = self.watch.lock().expect("watch lock");
+        watch.resolved.remove(dir);
+        if let Some(w) = watch.native.as_mut() {
+            let _ = w.unwatch(dir);
         }
-        watch
+        if let Some(w) = watch.poll.as_mut() {
+            let _ = w.unwatch(dir);
+        }
+    }
+
+    /// A watcher's path under every name the tree knows it by: as reported,
+    /// and with the resolved prefix of each folder watched through a link
+    /// (longest first) mapped back to the link. One folder can be watched
+    /// both ways, so both names are reported.
+    fn as_given(&self, path: PathBuf) -> Vec<PathBuf> {
+        let watch = self.watch.lock().expect("watch lock");
+        let mut mapped: Vec<(usize, PathBuf)> = watch
             .resolved
             .iter()
-            .filter(|(resolved, given)| resolved != given && path.starts_with(resolved))
-            .max_by_key(|(resolved, _)| resolved.as_os_str().len())
-            .and_then(|(resolved, given)| {
-                path.strip_prefix(resolved)
-                    .ok()
-                    .map(|rest| given.join(rest))
+            .filter(|(given, resolved)| given != resolved && path.starts_with(resolved))
+            .filter_map(|(given, resolved)| {
+                let rest = path.strip_prefix(resolved).ok()?;
+                Some((resolved.as_os_str().len(), given.join(rest)))
             })
-            .unwrap_or(path)
+            .collect();
+        mapped.sort_by_key(|m| std::cmp::Reverse(m.0));
+        let mut names = vec![path];
+        names.extend(mapped.into_iter().map(|(_, p)| p));
+        names
     }
 }
 
@@ -228,8 +258,12 @@ fn debounce(raw: &mpsc::Receiver<notify::Result<notify::Event>>, shared: &Shared
         let mut paths: Vec<PathBuf> = Vec::new();
         let mut take = |event: notify::Result<notify::Event>| {
             let Ok(event) = event else { return };
-            for path in event.paths {
-                let path = shared.as_given(path);
+            // Reading a folder (our own listings do) is an access, not a
+            // change; counting it would make every listing ask for another.
+            if matches!(event.kind, notify::EventKind::Access(_)) {
+                return;
+            }
+            for path in event.paths.into_iter().flat_map(|p| shared.as_given(p)) {
                 if !paths.contains(&path) {
                     paths.push(path);
                 }
@@ -413,15 +447,62 @@ mod tests {
         let (sink, _rx) = collecting();
         let services = Services::start(sink).unwrap();
         services.shared.watch_dir(&link);
-        assert_eq!(
-            services.shared.as_given(dir.join("x.md")),
-            link.join("x.md")
+        assert!(
+            services
+                .shared
+                .as_given(dir.join("x.md"))
+                .contains(&link.join("x.md"))
         );
         assert_eq!(
             services.shared.as_given(link.join("y.md")),
-            link.join("y.md")
+            vec![link.join("y.md")]
+        );
+        // Watched both directly and through the link: both names come back.
+        services.shared.watch_dir(&dir);
+        let names = services.shared.as_given(dir.join("x.md"));
+        assert!(
+            names.contains(&dir.join("x.md")) && names.contains(&link.join("x.md")),
+            "{names:?}"
         );
         let _ = std::fs::remove_file(&link);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn listing_a_folder_is_not_a_change() {
+        let dir = temp("quiet");
+        std::fs::write(dir.join("a.md"), "a").unwrap();
+        let (sink, rx) = collecting();
+        let services = Services::start(sink).unwrap();
+        for _ in 0..3 {
+            services.handle(Request::ListDir(dir.clone()));
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        // Listings come back, but reading the folder reports no change.
+        let mut changed = false;
+        while let Ok(e) = rx.recv_timeout(Duration::from_millis(600)) {
+            changed |= matches!(e, ServiceEvent::Changed(_));
+        }
+        assert!(!changed, "listing a folder must not report it changed");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn dropping_stops_watching() {
+        let dir = temp("drop");
+        let (sink, rx) = collecting();
+        let services = Services::start(sink).unwrap();
+        services.handle(Request::ListDir(dir.clone()));
+        assert!(wait_for(&rx, |e| matches!(e, ServiceEvent::Listed { .. })));
+        drop(services);
+        // inotify's thread stops shortly after its watcher is dropped.
+        std::thread::sleep(Duration::from_millis(300));
+        std::fs::write(dir.join("after.md"), "x").unwrap();
+        // Nothing arrives, and the sender side closes (the sink is dropped).
+        assert!(!matches!(
+            rx.recv_timeout(Duration::from_millis(600)),
+            Ok(ServiceEvent::Changed(_))
+        ));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

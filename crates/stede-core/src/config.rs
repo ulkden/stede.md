@@ -518,7 +518,7 @@ pub fn project_dir(start: &Path) -> Option<PathBuf> {
 
 /// A path with `.` dropped and `..` applied to the part before it, without
 /// touching the file system (so symlinks are kept as written).
-fn lexical_normal(path: &Path) -> PathBuf {
+pub fn lexical_normal(path: &Path) -> PathBuf {
     use std::path::Component;
     let mut out = PathBuf::new();
     for c in path.components() {
