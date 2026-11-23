@@ -10,8 +10,9 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
+use stede_core::layout::PaneId;
 use stede_core::modal::{self, Modal, ModalBody};
-use stede_core::view::{PaneView, STATUS_ROWS, View};
+use stede_core::view::{PaneView, STATUS_ROWS, TreeView, View};
 
 /// The shell's colors, taken from the core's theme slots.
 #[derive(Clone, Copy, Debug)]
@@ -160,7 +161,7 @@ pub fn draw(frame: &mut Frame, view: &View, theme: &Theme) {
     let [panes_area, status_area] =
         Layout::vertical([Constraint::Min(0), Constraint::Length(STATUS_ROWS)]).areas(frame.area());
     for pane in &view.panes {
-        draw_pane(frame, panes_area, pane, theme);
+        draw_pane(frame, panes_area, pane, view, theme);
     }
     draw_status(frame, status_area, view, theme);
     let footer = view
@@ -178,7 +179,7 @@ fn pane_rect(area: Rect, pane: &PaneView) -> Rect {
     Rect::new(x, area.y, width, area.height)
 }
 
-fn draw_pane(frame: &mut Frame, area: Rect, pane: &PaneView, theme: &Theme) {
+fn draw_pane(frame: &mut Frame, area: Rect, pane: &PaneView, view: &View, theme: &Theme) {
     let rect = pane_rect(area, pane);
     if rect.width == 0 || rect.height == 0 {
         return;
@@ -205,10 +206,82 @@ fn draw_pane(frame: &mut Frame, area: Rect, pane: &PaneView, theme: &Theme) {
     } else {
         Style::new()
     };
+    // The tree's title names its folder: " Files: notes ".
+    let title = match (pane.id, &view.tree.root) {
+        (PaneId::Tree, Some(root)) => format!(" {}: {root} ", pane.title),
+        _ => format!(" {} ", pane.title),
+    };
     let block = Block::bordered()
         .border_style(border)
-        .title(Line::styled(format!(" {} ", pane.title), title_style));
+        .title(Line::styled(title, title_style));
+    let inner = block.inner(rect);
     frame.render_widget(block, rect);
+    if pane.id == PaneId::Tree {
+        draw_tree(frame, inner, &view.tree, pane.focused, theme);
+    }
+}
+
+/// The file tree: folders marked open (▾) or closed (▸), children indented,
+/// the selection highlighted (reversed while the pane has focus).
+fn draw_tree(frame: &mut Frame, area: Rect, tree: &TreeView, focused: bool, theme: &Theme) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let dim = Style::new().fg(theme.dim);
+    if let Some(error) = &tree.error {
+        frame.render_widget(
+            Paragraph::new(Line::styled(format!("can't list: {error}"), dim)),
+            area,
+        );
+        return;
+    }
+    if tree.loading {
+        frame.render_widget(Paragraph::new(Line::styled("Loading…", dim)), area);
+        return;
+    }
+    if tree.rows.is_empty() {
+        frame.render_widget(Paragraph::new(Line::styled("(empty)", dim)), area);
+        return;
+    }
+    let height = usize::from(area.height);
+    let lines: Vec<Line> = tree
+        .rows
+        .iter()
+        .enumerate()
+        .skip(tree.scroll)
+        .take(height)
+        .map(|(i, row)| {
+            let marker = match (row.is_dir, row.expanded) {
+                (true, true) => "▾ ",
+                (true, false) => "▸ ",
+                (false, _) => "  ",
+            };
+            let mut text = format!("{}{marker}{}", "  ".repeat(row.depth), row.name);
+            if row.is_dir {
+                text.push('/');
+            }
+            if row.loading {
+                text.push_str(" …");
+            }
+            if let Some(e) = &row.error {
+                text.push_str(&format!(" (can't list: {e})"));
+            }
+            let mut style = if row.is_dir {
+                Style::new().fg(theme.accent)
+            } else {
+                Style::new()
+            };
+            if tree.selected == Some(i) {
+                style = if focused {
+                    style.add_modifier(Modifier::REVERSED)
+                } else {
+                    style.add_modifier(Modifier::BOLD)
+                };
+            }
+            Line::styled(text, style)
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
 fn draw_status(frame: &mut Frame, area: Rect, view: &View, theme: &Theme) {
@@ -222,6 +295,9 @@ fn draw_status(frame: &mut Frame, area: Rect, view: &View, theme: &Theme) {
     let mut spans = vec![mode];
     if !view.status.pending.is_empty() {
         spans.push(Span::raw(format!(" {}", view.status.pending)));
+    }
+    if let Some(file) = &view.status.file {
+        spans.push(Span::styled(format!(" {file}"), Style::new().fg(theme.dim)));
     }
     if let Some(message) = &view.status.message {
         spans.push(Span::raw("  "));
@@ -449,6 +525,39 @@ mod tests {
         assert!(matches!(t.accent, Color::Indexed(_)));
         let t = Theme::from_core(&core, ColorSupport::Truecolor);
         assert!(matches!(t.accent, Color::Rgb(..)));
+    }
+
+    #[test]
+    fn file_tree_pane() {
+        use stede_core::io::{Entry, ServiceEvent};
+        let entry = |p: &str, dir: bool| Entry {
+            name: std::path::Path::new(p)
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+            path: p.into(),
+            is_dir: dir,
+        };
+        let mut app = App::new(AppOptions {
+            root: Some("/notes".into()),
+            ..AppOptions::default()
+        });
+        insta::assert_snapshot!("tree_loading", render(&mut app, 70, 8));
+        app.handle_event(ServiceEvent::Listed {
+            dir: "/notes".into(),
+            result: Ok(vec![
+                entry("/notes/drafts", true),
+                entry("/notes/日本語.md", false),
+                entry("/notes/todo.md", false),
+            ]),
+        });
+        press(&mut app, "2<C-l>l");
+        app.handle_event(ServiceEvent::Listed {
+            dir: "/notes/drafts".into(),
+            result: Ok(vec![entry("/notes/drafts/idea.md", false)]),
+        });
+        insta::assert_snapshot!("tree_listed", render(&mut app, 70, 8));
     }
 
     #[test]

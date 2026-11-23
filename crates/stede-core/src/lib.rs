@@ -9,11 +9,13 @@
 pub mod action;
 pub mod app;
 pub mod config;
+pub mod io;
 pub mod key;
 pub mod keymap;
 pub mod layout;
 pub mod modal;
 pub mod theme;
+pub mod tree;
 pub mod view;
 
 pub use app::{App, AppOptions, Handled};

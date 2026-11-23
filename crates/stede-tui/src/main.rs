@@ -13,14 +13,18 @@ mod ui;
 use std::io;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::{Arc, mpsc};
+use std::thread;
 use std::time::Instant;
 
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event};
 use stede_core::config::{self, Config, ConfigError};
+use stede_core::io::ServiceEvent;
 use stede_core::layout::LayoutOptions;
 use stede_core::{App, AppOptions};
 use stede_markdown::Flavor;
+use stede_services::{Services, Sink};
 
 const USAGE: &str = "\
 Usage: stede [PATH]
@@ -96,11 +100,22 @@ fn main() -> ExitCode {
 }
 
 fn open(path: Option<PathBuf>) -> io::Result<()> {
-    let tree_folded = match &path {
+    let (root, file) = match &path {
         // metadata, not exists(): a permission error says so instead of
         // looking like a missing path.
         Some(p) => match std::fs::metadata(p) {
-            Ok(meta) => meta.is_file(),
+            Ok(meta) => {
+                let abs = std::path::absolute(p)?;
+                if meta.is_file() {
+                    let parent = abs
+                        .parent()
+                        .map(PathBuf::from)
+                        .unwrap_or_else(|| abs.clone());
+                    (parent, Some(abs))
+                } else {
+                    (abs, None)
+                }
+            }
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
                 return Err(io::Error::new(
                     e.kind(),
@@ -109,37 +124,70 @@ fn open(path: Option<PathBuf>) -> io::Result<()> {
             }
             Err(e) => return Err(io::Error::new(e.kind(), format!("{}: {e}", p.display()))),
         },
-        None => false,
+        None => (std::env::current_dir()?, None),
     };
     let (config, config_errors) = load_config(path.as_deref());
-    let theme = ui::Theme::from_core(
+    let mut theme = theme_for(&config);
+    let mut app = App::new(AppOptions {
+        layout: LayoutOptions {
+            tree_folded: file.is_some(),
+            ..LayoutOptions::default()
+        },
+        config,
+        config_errors,
+        root: Some(root),
+        file,
+    });
+
+    // One channel for everything the loop waits on: keys from the input
+    // thread and results from the services.
+    let (tx, rx) = mpsc::sync_channel::<AppEvent>(256);
+    let input_tx = tx.clone();
+    thread::Builder::new()
+        .name("stede-input".into())
+        .spawn(move || {
+            while let Ok(event) = event::read() {
+                if input_tx.send(AppEvent::Input(event)).is_err() {
+                    break;
+                }
+            }
+        })?;
+    let sink: Sink = Arc::new(move |event| {
+        let _ = tx.send(AppEvent::Service(event));
+    });
+    let services = Services::start(sink)?;
+    let start = path.clone().unwrap_or_else(|| PathBuf::from("."));
+    services.watch_config(&config::layer_paths(&start, |k| std::env::var(k).ok()));
+
+    // try_init returns an error (no TTY, say) instead of panicking, and installs
+    // the panic hook that restores the terminal.
+    let mut terminal = ratatui::try_init()?;
+    let result = run(
+        &mut terminal,
+        &mut app,
+        &mut theme,
+        &rx,
+        &services,
+        path.as_deref(),
+    );
+    ratatui::restore();
+    result
+}
+
+/// What the loop waits on.
+enum AppEvent {
+    Input(Event),
+    Service(ServiceEvent),
+}
+
+fn theme_for(config: &Config) -> ui::Theme {
+    ui::Theme::from_core(
         &config.theme,
         ui::ColorSupport::detect(
             std::env::var("COLORTERM").ok().as_deref(),
             std::env::var("TERM").ok().as_deref(),
         ),
-    );
-    let mut app = App::new(AppOptions {
-        layout: LayoutOptions {
-            tree_folded,
-            ..LayoutOptions::default()
-        },
-        config,
-        config_errors,
-    });
-    // Loading files arrives in phase 1 step 5 (docs/phase-1.md). A config
-    // problem message, if any, takes the status line first.
-    if let Some(p) = &path
-        && app.view().status.message.is_none()
-    {
-        app.notify(format!("{}: opening files isn't built yet", p.display()));
-    }
-    // try_init returns an error (no TTY, say) instead of panicking, and installs
-    // the panic hook that restores the terminal.
-    let mut terminal = ratatui::try_init()?;
-    let result = run(&mut terminal, &mut app, &theme);
-    ratatui::restore();
-    result
+    )
 }
 
 /// Flavors in the plan (CLAUDE.md) that aren't built yet.
@@ -186,11 +234,21 @@ fn load_config(path: Option<&std::path::Path>) -> (Config, Vec<ConfigError>) {
     (config, errors)
 }
 
-fn run(terminal: &mut DefaultTerminal, app: &mut App, theme: &ui::Theme) -> io::Result<()> {
+fn run(
+    terminal: &mut DefaultTerminal,
+    app: &mut App,
+    theme: &mut ui::Theme,
+    events: &mpsc::Receiver<AppEvent>,
+    services: &Services,
+    path: Option<&std::path::Path>,
+) -> io::Result<()> {
     // When a key sequence is ambiguous: the moment its timeout runs out. Other
-    // events (resize, focus, unnamed keys) don't push the deadline back.
+    // events (resize, service results) don't push the deadline back.
     let mut deadline: Option<Instant> = None;
     loop {
+        for request in app.take_requests() {
+            services.handle(request);
+        }
         let size = terminal.size()?;
         app.resize(size.width, size.height);
         terminal.draw(|frame| ui::draw(frame, &app.view(), theme))?;
@@ -198,21 +256,34 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App, theme: &ui::Theme) -> io::
             return Ok(());
         }
         let event = match deadline {
-            Some(at) => {
-                let left = at.saturating_duration_since(Instant::now());
-                if event::poll(left)? {
-                    Some(event::read()?)
-                } else {
-                    None
-                }
-            }
-            None => Some(event::read()?),
+            Some(at) => match events.recv_timeout(at.saturating_duration_since(Instant::now())) {
+                Ok(event) => Some(event),
+                Err(mpsc::RecvTimeoutError::Timeout) => None,
+                Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
+            },
+            None => match events.recv() {
+                Ok(event) => Some(event),
+                Err(_) => return Ok(()),
+            },
         };
         let handled = match event {
             None => Some(app.handle_timeout()),
-            Some(Event::Key(key)) => input::to_key(key).map(|key| app.handle_key(key)),
-            // Resize and everything else: just draw again.
-            Some(_) => None,
+            Some(AppEvent::Input(Event::Key(key))) => {
+                input::to_key(key).map(|key| app.handle_key(key))
+            }
+            // Resize and other input: just draw again.
+            Some(AppEvent::Input(_)) => None,
+            Some(AppEvent::Service(ServiceEvent::ConfigChanged)) => {
+                // Live reload: read every layer again. Problems show as at start.
+                let (config, errors) = load_config(path);
+                *theme = theme_for(&config);
+                app.apply_config(&config, &errors);
+                None
+            }
+            Some(AppEvent::Service(event)) => {
+                app.handle_event(event);
+                None
+            }
         };
         if let Some(handled) = handled {
             deadline = handled.wait.then(|| Instant::now() + app.key_timeout());

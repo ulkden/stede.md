@@ -169,6 +169,17 @@ impl Layout {
         }
     }
 
+    /// Moves the file tree to the left or right edge, keeping every pane's
+    /// state, width and the focus.
+    pub fn set_tree_side(&mut self, side: TreeSide) {
+        let i = self.index(PaneId::Tree);
+        let tree = self.slots.remove(i);
+        match side {
+            TreeSide::Left => self.slots.insert(0, tree),
+            TreeSide::Right => self.slots.push(tree),
+        }
+    }
+
     /// The pane with focus. It is always open.
     pub fn focus(&self) -> PaneId {
         self.focus

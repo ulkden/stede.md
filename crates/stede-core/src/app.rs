@@ -6,14 +6,17 @@
 //! [`App::handle_timeout`] once [`App::key_timeout`] passes with no new key.
 //! Then it draws [`App::view`].
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::action::{Action, Registry};
+use crate::io::{Request, ServiceEvent};
 use crate::key::{Key, format_keys};
 use crate::keymap::{Context, Keymap, Mode, Resolver, Scope, Step};
 use crate::layout::{Layout, LayoutOptions, PaneId};
 use crate::modal::{Modal, ModalBody, ModalStack, Row, Section};
-use crate::view::{PaneView, STATUS_ROWS, StatusView, View};
+use crate::tree::Tree;
+use crate::view::{PaneView, STATUS_ROWS, StatusView, TreeView, View};
 
 /// Identifies the key cheat sheet among open modals, so its hotkey toggles it.
 const CHEAT_SHEET_ID: &str = "help.keys";
@@ -39,6 +42,11 @@ pub struct AppOptions {
     pub config: crate::config::Config,
     /// Problems found while reading config files; shown in a modal at start.
     pub config_errors: Vec<crate::config::ConfigError>,
+    /// The folder the file tree shows. `None` shows no tree content.
+    pub root: Option<PathBuf>,
+    /// The file opened on the command line, if one was: it's selected in the
+    /// tree once that shows.
+    pub file: Option<PathBuf>,
 }
 
 /// The editor state a front end drives.
@@ -57,19 +65,23 @@ pub struct App {
     /// The config problems found at start, kept so `config.problems` can
     /// show them any time (other output modals can't push them out).
     config_problems: Option<Modal>,
+    tree: Tree,
+    /// Work for the services, collected until the front end takes it.
+    outbox: Vec<Request>,
+    /// The file last opened from the tree (or on the command line).
+    current_file: Option<PathBuf>,
 }
 
 impl App {
     pub fn new(options: AppOptions) -> Self {
         let registry = Registry::with_builtins();
-        let (keymap, key_errors) = Keymap::from_config(&registry, &options.config);
         let layout = Layout::new(LayoutOptions {
             tree_side: options.config.tree_side,
             ..options.layout
         });
         let mut app = Self {
+            keymap: Keymap::defaults(&registry),
             registry,
-            keymap,
             resolver: Resolver::new(),
             layout,
             mode: Mode::Normal,
@@ -78,9 +90,36 @@ impl App {
             quit: false,
             screen: (80, 24),
             config_problems: None,
+            tree: Tree::default(),
+            outbox: Vec::new(),
+            current_file: options.file.clone(),
         };
+        if let Some(root) = options.root {
+            let (tree, first) = Tree::new(root, options.file);
+            app.tree = tree;
+            app.outbox.push(Request::ListDir(first));
+        }
+        app.apply_config(&options.config, &options.config_errors);
+        app
+    }
+
+    /// Applies a config: keys, timeout and tree side. Problems open in a
+    /// modal if any is an error (config was skipped); notes only get a hint.
+    /// Used at start and when a config file changes on disk.
+    pub fn apply_config(
+        &mut self,
+        config: &crate::config::Config,
+        config_errors: &[crate::config::ConfigError],
+    ) {
+        let (keymap, key_errors) = Keymap::from_config(&self.registry, config);
+        self.keymap = keymap;
+        self.resolver.reset();
+        self.key_timeout = config.key_timeout;
+        self.layout.set_tree_side(config.tree_side);
+        self.config_problems = None;
+        let app = self;
         let all: Vec<&crate::config::ConfigError> =
-            options.config_errors.iter().chain(&key_errors).collect();
+            config_errors.iter().chain(&key_errors).collect();
         if !all.is_empty() {
             use crate::config::Severity;
             let errors = all.iter().filter(|e| e.severity == Severity::Error).count();
@@ -105,7 +144,48 @@ impl App {
             }
             app.config_problems = Some(modal);
         }
-        app
+    }
+
+    /// Work for the services since the last call: hand it to `stede-services`.
+    pub fn take_requests(&mut self) -> Vec<Request> {
+        std::mem::take(&mut self.outbox)
+    }
+
+    /// A result from the services.
+    pub fn handle_event(&mut self, event: ServiceEvent) -> Handled {
+        match event {
+            ServiceEvent::Listed { dir, result } => {
+                let known = self.tree.listed(&dir, result);
+                self.rescroll_tree();
+                Handled {
+                    redraw: known,
+                    wait: false,
+                }
+            }
+            ServiceEvent::Changed(paths) => {
+                for dir in self.tree.stale(&paths) {
+                    self.outbox.push(Request::ListDir(dir));
+                }
+                Handled::default()
+            }
+            // Re-reading config files is the front end's job (it found them).
+            ServiceEvent::ConfigChanged => Handled::default(),
+        }
+    }
+
+    /// The file last opened, if any.
+    pub fn current_file(&self) -> Option<&std::path::Path> {
+        self.current_file.as_deref()
+    }
+
+    /// Rows the tree pane shows: the pane less its borders.
+    fn tree_height(&self) -> usize {
+        usize::from(self.panes_height().saturating_sub(2))
+    }
+
+    fn rescroll_tree(&mut self) {
+        let height = self.tree_height();
+        self.tree.scroll_for(height);
     }
 
     pub fn registry(&self) -> &Registry {
@@ -149,6 +229,7 @@ impl App {
         // smaller: clamp now so the next `k` moves the view.
         let visible = crate::modal::max_body_rows(self.panes_height());
         self.layout.modals_mut().clamp_scroll(visible);
+        self.rescroll_tree();
     }
 
     /// Shows a message in the status line until the next action.
@@ -266,6 +347,27 @@ impl App {
                 self.layout.focus_step(step, times);
             }
             "pane.focus_one" => self.layout.focus_one(),
+            "tree.down" | "tree.up" => {
+                let sign: isize = if action.name == "tree.down" { 1 } else { -1 };
+                self.tree.move_by(sign * times as isize);
+                self.rescroll_tree();
+            }
+            "tree.top" | "tree.bottom" => {
+                self.tree.move_to_end(action.name == "tree.bottom");
+                self.rescroll_tree();
+            }
+            "tree.open" => self.tree_open()?,
+            "tree.close" => {
+                let rows = self.tree.rows();
+                if let Some(row) = self.tree.selected_index(&rows).map(|i| &rows[i]) {
+                    if row.is_dir && row.expanded {
+                        self.tree.collapse(&row.path.clone());
+                    } else {
+                        self.tree.select_parent();
+                    }
+                }
+                self.rescroll_tree();
+            }
             "pane.toggle" => {
                 let pane: PaneId = action
                     .arg()
@@ -294,6 +396,29 @@ impl App {
     }
 
     /// The view model for the screen size last passed to [`resize`](Self::resize).
+    /// Opens the selected tree entry: a folder opens or closes, a file is
+    /// handed to the services to load.
+    fn tree_open(&mut self) -> Result<(), String> {
+        let rows = self.tree.rows();
+        let Some(row) = self.tree.selected_index(&rows).map(|i| rows[i].clone()) else {
+            return Err("the tree is empty".into());
+        };
+        if row.is_dir {
+            if row.expanded {
+                self.tree.collapse(&row.path);
+            } else if let Some(dir) = self.tree.expand(&row.path) {
+                self.outbox.push(Request::ListDir(dir));
+            }
+        } else {
+            self.current_file = Some(row.path.clone());
+            self.outbox.push(Request::OpenFile(row.path.clone()));
+            // Showing it in the panes arrives in phase 1 step 6.
+            self.message = Some(format!("{}: viewing files isn't built yet", row.name));
+        }
+        self.rescroll_tree();
+        Ok(())
+    }
+
     pub fn view(&self) -> View<'_> {
         let width = self.screen.0;
         let focus = self.layout.focus();
@@ -308,8 +433,23 @@ impl App {
                 focused: rect.id == focus,
             })
             .collect();
+        let rows = self.tree.rows();
+        let tree = TreeView {
+            root: self.tree.root().map(|r| {
+                r.file_name()
+                    .unwrap_or(r.as_os_str())
+                    .to_string_lossy()
+                    .into_owned()
+            }),
+            selected: self.tree.selected_index(&rows),
+            scroll: self.tree.scroll(),
+            loading: self.tree.is_loading(),
+            error: self.tree.root_error().map(str::to_owned),
+            rows,
+        };
         View {
             panes,
+            tree,
             modals: self.layout.modals().iter().collect(),
             close_key: self
                 .keymap
@@ -319,6 +459,7 @@ impl App {
                 mode: self.mode.name(),
                 pending: self.resolver.pending(),
                 message: self.message.clone(),
+                file: self.current_file.as_ref().map(|p| p.display().to_string()),
             },
         }
     }
@@ -573,6 +714,124 @@ mod tests {
             ..AppOptions::default()
         });
         assert_eq!(app.keymap().leader(), Key::char(' '));
+    }
+
+    fn entry(path: &str, is_dir: bool) -> crate::io::Entry {
+        let path = PathBuf::from(path);
+        crate::io::Entry {
+            name: path.file_name().unwrap().to_string_lossy().into_owned(),
+            path,
+            is_dir,
+        }
+    }
+
+    fn tree_app() -> App {
+        let mut app = App::new(AppOptions {
+            root: Some("/p".into()),
+            ..AppOptions::default()
+        });
+        assert_eq!(app.take_requests(), vec![Request::ListDir("/p".into())]);
+        app.handle_event(ServiceEvent::Listed {
+            dir: "/p".into(),
+            result: Ok(vec![entry("/p/docs", true), entry("/p/a.md", false)]),
+        });
+        press(&mut app, "2<C-l>");
+        assert_eq!(app.layout().focus(), PaneId::Tree);
+        app
+    }
+
+    #[test]
+    fn tree_keys_move_open_and_close() {
+        let mut app = tree_app();
+        assert_eq!(app.view().tree.selected, Some(0));
+        press(&mut app, "l");
+        assert_eq!(
+            app.take_requests(),
+            vec![Request::ListDir("/p/docs".into())]
+        );
+        app.handle_event(ServiceEvent::Listed {
+            dir: "/p/docs".into(),
+            result: Ok(vec![entry("/p/docs/x.md", false)]),
+        });
+        press(&mut app, "j");
+        assert_eq!(app.view().tree.rows[1].name, "x.md");
+        assert_eq!(app.view().tree.selected, Some(1));
+        press(&mut app, "<CR>");
+        assert_eq!(
+            app.take_requests(),
+            vec![Request::OpenFile("/p/docs/x.md".into())]
+        );
+        assert_eq!(
+            app.current_file(),
+            Some(std::path::Path::new("/p/docs/x.md"))
+        );
+        press(&mut app, "h");
+        assert_eq!(
+            app.view().tree.selected,
+            Some(0),
+            "h on a file goes to its folder"
+        );
+        press(&mut app, "h");
+        assert_eq!(
+            app.view().tree.rows.len(),
+            2,
+            "h on an open folder closes it"
+        );
+        press(&mut app, "G");
+        assert_eq!(app.view().tree.selected, Some(1));
+        press(&mut app, "gg");
+        assert_eq!(app.view().tree.selected, Some(0));
+    }
+
+    #[test]
+    fn tree_keys_only_apply_in_the_tree() {
+        let mut app = tree_app();
+        press(&mut app, "<C-h><C-h>");
+        assert_eq!(app.layout().focus(), PaneId::Raw);
+        press(&mut app, "G");
+        assert_eq!(app.view().tree.selected, Some(0));
+    }
+
+    #[test]
+    fn changes_on_disk_ask_for_fresh_listings() {
+        let mut app = tree_app();
+        app.handle_event(ServiceEvent::Changed(vec!["/p/new.md".into()]));
+        assert_eq!(app.take_requests(), vec![Request::ListDir("/p".into())]);
+        // A listing for a folder the tree never asked for changes nothing.
+        let h = app.handle_event(ServiceEvent::Listed {
+            dir: "/elsewhere".into(),
+            result: Ok(vec![]),
+        });
+        assert!(!h.redraw);
+    }
+
+    #[test]
+    fn single_file_selects_it_in_the_tree() {
+        let mut app = App::new(AppOptions {
+            root: Some("/p".into()),
+            file: Some("/p/a.md".into()),
+            ..AppOptions::default()
+        });
+        app.handle_event(ServiceEvent::Listed {
+            dir: "/p".into(),
+            result: Ok(vec![entry("/p/docs", true), entry("/p/a.md", false)]),
+        });
+        assert_eq!(app.view().tree.selected, Some(1));
+        assert_eq!(app.view().status.file.as_deref(), Some("/p/a.md"));
+    }
+
+    #[test]
+    fn config_reload_applies_keys_and_side() {
+        use crate::config::{Config, Layer};
+        let mut app = App::new(AppOptions::default());
+        let (config, errors) = Config::from_layers(&[Layer {
+            path: "c.toml".into(),
+            text: "[ui]\ntree_side = \"left\"\n[keys.normal]\nQ = \"app.quit\"\n".into(),
+        }]);
+        app.apply_config(&config, &errors);
+        assert_eq!(app.layout().order().next(), Some(PaneId::Tree));
+        press(&mut app, "Q");
+        assert!(app.should_quit());
     }
 
     #[test]

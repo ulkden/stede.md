@@ -29,9 +29,12 @@ stede-core = { path = "crates/stede-core" }
 stede-markdown = { path = "crates/stede-markdown" }
 stede-services = { path = "crates/stede-services" }
 # Third-party crates: one place, full versions (see CONTRIBUTING.md, Dependencies).
+ignore = "0.4.34"
+notify = "8.2.2"
 comrak = { version = "0.59.0", default-features = false }
 insta = "1.49.0"
 ratatui = "0.30.2"
+tokio = { version = "1.54.1", features = ["rt-multi-thread"] }
 toml_edit = { version = "0.25.19", default-features = false, features = ["parse"] }
 
 [workspace.lints.rust]
