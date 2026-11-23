@@ -1,0 +1,434 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//! The editor loop: key events in, actions run, a view model out.
+//!
+//! A front end owns the event loop and the clock. It sends each key press to
+//! [`App::handle_key`]; if that reports a pending sequence, it calls
+//! [`App::handle_timeout`] once [`App::key_timeout`] passes with no new key.
+//! Then it draws [`App::view`].
+
+use std::time::Duration;
+
+use crate::action::{Action, Registry};
+use crate::key::{Key, format_keys};
+use crate::keymap::{Context, Keymap, Mode, Resolver, Scope, Step};
+use crate::layout::{Layout, LayoutOptions, PaneId};
+use crate::modal::{Modal, ModalBody, ModalStack, Row, Section};
+use crate::view::{PaneView, StatusView, View};
+
+/// Identifies the key cheat sheet among open modals, so its hotkey toggles it.
+const CHEAT_SHEET_ID: &str = "help.keys";
+
+/// How long to wait for the next key of an ambiguous sequence (Vim's `timeoutlen`).
+pub const DEFAULT_KEY_TIMEOUT: Duration = Duration::from_millis(1000);
+
+/// What a key press did, for the front end's loop.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Handled {
+    /// The view changed and should be drawn again.
+    pub redraw: bool,
+    /// A sequence is pending: call `handle_timeout` if no key comes in time.
+    pub wait: bool,
+}
+
+/// How the app starts.
+#[derive(Clone, Debug, Default)]
+pub struct AppOptions {
+    pub layout: LayoutOptions,
+}
+
+/// The editor state a front end drives.
+#[derive(Debug)]
+pub struct App {
+    registry: Registry,
+    keymap: Keymap,
+    resolver: Resolver,
+    layout: Layout,
+    mode: Mode,
+    message: Option<String>,
+    key_timeout: Duration,
+    quit: bool,
+}
+
+impl App {
+    pub fn new(options: AppOptions) -> Self {
+        let registry = Registry::with_builtins();
+        let keymap = Keymap::defaults(&registry);
+        Self {
+            registry,
+            keymap,
+            resolver: Resolver::new(),
+            layout: Layout::new(options.layout),
+            mode: Mode::Normal,
+            message: None,
+            key_timeout: DEFAULT_KEY_TIMEOUT,
+            quit: false,
+        }
+    }
+
+    pub fn registry(&self) -> &Registry {
+        &self.registry
+    }
+
+    pub fn keymap(&self) -> &Keymap {
+        &self.keymap
+    }
+
+    pub fn layout(&self) -> &Layout {
+        &self.layout
+    }
+
+    pub fn modals(&self) -> &ModalStack {
+        self.layout.modals()
+    }
+
+    /// True once `app.quit` has run; the front end should exit.
+    pub fn should_quit(&self) -> bool {
+        self.quit
+    }
+
+    pub fn key_timeout(&self) -> Duration {
+        self.key_timeout
+    }
+
+    fn context(&self) -> Context {
+        Context {
+            mode: self.mode,
+            pane: self.layout.focus(),
+            modal: self.layout.modals().is_open(),
+        }
+    }
+
+    /// Handles one key press.
+    pub fn handle_key(&mut self, key: Key) -> Handled {
+        let ctx = self.context();
+        let step = self.resolver.feed(&self.keymap, ctx, key);
+        self.apply(step)
+    }
+
+    /// Call when [`key_timeout`](Self::key_timeout) passes after a pending key.
+    pub fn handle_timeout(&mut self) -> Handled {
+        let ctx = self.context();
+        match self.resolver.timeout(&self.keymap, ctx) {
+            Some(step) => self.apply(step),
+            None => Handled {
+                redraw: true,
+                wait: false,
+            },
+        }
+    }
+
+    fn apply(&mut self, step: Step) -> Handled {
+        match step {
+            Step::Pending => Handled {
+                redraw: true,
+                wait: true,
+            },
+            // A count waits for its key with no timeout.
+            Step::Count => Handled {
+                redraw: true,
+                wait: false,
+            },
+            Step::Cancelled => {
+                self.message = None;
+                Handled {
+                    redraw: true,
+                    wait: false,
+                }
+            }
+            Step::Unbound(keys) => {
+                self.message = Some(format!("{keys} is not bound"));
+                Handled {
+                    redraw: true,
+                    wait: false,
+                }
+            }
+            Step::Run { action, count } => {
+                self.message = None;
+                if let Err(e) = self.run(&action, count) {
+                    self.message = Some(e);
+                }
+                Handled {
+                    redraw: true,
+                    wait: false,
+                }
+            }
+        }
+    }
+
+    /// Runs a registered action. `count` repeats actions where that makes
+    /// sense (focus moves); others ignore it.
+    pub fn run(&mut self, action: &Action, count: Option<u32>) -> Result<(), String> {
+        if !self.registry.contains(&action.name) {
+            return Err(format!("unknown action {:?}", action.name));
+        }
+        let times = count.unwrap_or(1).max(1);
+        match action.name.as_str() {
+            "app.quit" => self.quit = true,
+            "help.keys" => self.toggle_cheat_sheet(),
+            "modal.close" => {
+                self.layout.modals_mut().close();
+            }
+            "modal.close_all" => {
+                self.layout.modals_mut().close_all();
+            }
+            "modal.reopen_last" => {
+                if !self.layout.modals_mut().reopen_last() {
+                    return Err("no output to reopen".into());
+                }
+            }
+            "pane.focus_left" | "pane.focus_right" => {
+                let step = if action.name == "pane.focus_left" {
+                    -1
+                } else {
+                    1
+                };
+                self.layout.focus_step(step, times);
+            }
+            "pane.focus_one" => self.layout.focus_one(),
+            "pane.toggle" => {
+                let pane: PaneId = action
+                    .arg()
+                    .ok_or("pane.toggle needs a pane: raw, rendered or tree")?
+                    .parse()?;
+                if !self.layout.toggle(pane) {
+                    return Err(format!("{} is the only open pane", pane.title()));
+                }
+            }
+            other => return Err(format!("{other} has no handler yet")),
+        }
+        Ok(())
+    }
+
+    /// Opens the cheat sheet, or, if it is open anywhere in the stack, closes
+    /// it along with anything opened on top of it.
+    fn toggle_cheat_sheet(&mut self) {
+        if let Some(index) = self.layout.modals().position(CHEAT_SHEET_ID) {
+            self.layout.modals_mut().close_through(index);
+            return;
+        }
+        let sheet = cheat_sheet(&self.keymap, &self.registry, self.mode);
+        self.layout.modals_mut().open(sheet);
+    }
+
+    /// The view model for a screen `width` cells wide.
+    pub fn view(&self, width: u16) -> View<'_> {
+        let focus = self.layout.focus();
+        let panes = self
+            .layout
+            .geometry(width)
+            .into_iter()
+            .map(|rect| PaneView {
+                id: rect.id,
+                title: rect.id.title(),
+                rect,
+                focused: rect.id == focus,
+            })
+            .collect();
+        View {
+            panes,
+            modals: self.layout.modals().iter().collect(),
+            status: StatusView {
+                mode: self.mode.name(),
+                pending: self.resolver.pending(),
+                message: self.message.clone(),
+            },
+        }
+    }
+}
+
+/// Builds the key cheat sheet for a mode from the live keymap: one section per
+/// scope, each row the keys, the action and its description.
+pub fn cheat_sheet(keymap: &Keymap, registry: &Registry, mode: Mode) -> Modal {
+    let mut sections: Vec<Section> = Vec::new();
+    for binding in keymap.bindings().filter(|b| b.mode == mode) {
+        let title = match binding.scope {
+            Scope::Modal => "In modals".to_owned(),
+            scope => format!("{} ({scope})", capitalize(mode.name())),
+        };
+        let description = registry
+            .get(&binding.action.name)
+            .map(|s| s.description.clone())
+            .unwrap_or_default();
+        let row = Row {
+            cells: vec![
+                format_keys(&binding.keys),
+                binding.action.to_string(),
+                description,
+            ],
+        };
+        match sections.iter_mut().find(|s| s.title == title) {
+            Some(section) => section.rows.push(row),
+            None => sections.push(Section {
+                title,
+                rows: vec![row],
+            }),
+        }
+    }
+    Modal::output(
+        "Keys",
+        ModalBody::Table {
+            headers: vec!["Keys".into(), "Action".into(), "Description".into()],
+            sections,
+        },
+    )
+    .with_id(CHEAT_SHEET_ID)
+}
+
+fn capitalize(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::key::{KeyCode, parse_keys};
+    use crate::layout::PaneState;
+
+    fn press(app: &mut App, keys: &str) -> Handled {
+        let mut last = Handled::default();
+        for key in parse_keys(keys, Some(app.keymap().leader())).unwrap() {
+            last = app.handle_key(key);
+        }
+        last
+    }
+
+    #[test]
+    fn a_count_typed_slowly_still_applies() {
+        let mut app = App::new(AppOptions::default());
+        let h = press(&mut app, "2");
+        assert!(!h.wait, "a bare count asks for no timeout");
+        app.handle_timeout();
+        press(&mut app, "<C-l>");
+        assert_eq!(app.layout().focus(), PaneId::Tree);
+    }
+
+    #[test]
+    fn quit() {
+        let mut app = App::new(AppOptions::default());
+        press(&mut app, "ZZ");
+        assert!(app.should_quit());
+    }
+
+    #[test]
+    fn toggle_and_focus_panes() {
+        let mut app = App::new(AppOptions::default());
+        press(&mut app, "<leader>e");
+        assert_eq!(app.layout().state(PaneId::Tree), PaneState::Folded);
+        press(&mut app, "2<C-l>");
+        assert_eq!(app.layout().focus(), PaneId::Tree);
+        assert_eq!(app.layout().state(PaneId::Tree), PaneState::Open);
+    }
+
+    #[test]
+    fn last_pane_refuses_to_fold() {
+        let mut app = App::new(AppOptions::default());
+        press(&mut app, "<leader>e<leader>p<leader>r");
+        assert_eq!(app.layout().state(PaneId::Raw), PaneState::Open);
+        assert_eq!(
+            app.view(80).status.message.as_deref(),
+            Some("Raw is the only open pane")
+        );
+    }
+
+    #[test]
+    fn cheat_sheet_toggles_and_closes() {
+        let mut app = App::new(AppOptions::default());
+        press(&mut app, "<leader>?");
+        assert_eq!(app.modals().top().unwrap().title, "Keys");
+        // Pane keys don't reach the panes while a modal is open.
+        press(&mut app, "<C-l>");
+        assert_eq!(app.layout().focus(), PaneId::Raw);
+        press(&mut app, "<leader>?");
+        assert!(!app.modals().is_open());
+        press(&mut app, "<F1>");
+        app.handle_key(Key::plain(KeyCode::Esc));
+        assert!(!app.modals().is_open());
+        press(&mut app, "<leader>o");
+        assert_eq!(app.modals().top().unwrap().title, "Keys");
+    }
+
+    #[test]
+    fn cheat_sheet_hotkey_closes_it_from_under_another_modal() {
+        let mut app = App::new(AppOptions::default());
+        press(&mut app, "<F1>");
+        app.layout
+            .modals_mut()
+            .open(Modal::output("Other", ModalBody::Text(vec![])));
+        press(&mut app, "<F1>");
+        assert!(
+            !app.modals().is_open(),
+            "closed through the sheet, no second copy"
+        );
+        // Another output that happens to be titled "Keys" isn't mistaken for it.
+        app.layout
+            .modals_mut()
+            .open(Modal::output("Keys", ModalBody::Text(vec![])));
+        press(&mut app, "<F1>");
+        assert_eq!(app.modals().len(), 2);
+    }
+
+    #[test]
+    fn cheat_sheet_lists_every_binding_with_a_description() {
+        let app = App::new(AppOptions::default());
+        let sheet = cheat_sheet(app.keymap(), app.registry(), Mode::Normal);
+        let ModalBody::Table { sections, .. } = sheet.body else {
+            panic!("table expected");
+        };
+        let rows: Vec<&Row> = sections.iter().flat_map(|s| &s.rows).collect();
+        assert_eq!(rows.len(), app.keymap().bindings().count());
+        assert!(
+            rows.iter()
+                .all(|r| r.cells.len() == 3 && !r.cells[2].is_empty())
+        );
+        assert!(
+            rows.iter()
+                .any(|r| r.cells[0] == "<Space>e" && r.cells[1] == "pane.toggle tree")
+        );
+    }
+
+    #[test]
+    fn pending_keys_show_and_time_out() {
+        let mut app = App::new(AppOptions::default());
+        let h = press(&mut app, "<C-w>");
+        assert!(h.wait);
+        assert_eq!(app.view(80).status.pending, "<C-w>");
+        app.handle_timeout();
+        assert_eq!(app.view(80).status.pending, "");
+        assert_eq!(
+            app.view(80).status.message.as_deref(),
+            Some("<C-w> is not bound")
+        );
+    }
+
+    #[test]
+    fn reopen_with_nothing_reports() {
+        let mut app = App::new(AppOptions::default());
+        press(&mut app, "<leader>o");
+        assert_eq!(
+            app.view(80).status.message.as_deref(),
+            Some("no output to reopen")
+        );
+    }
+
+    #[test]
+    fn bad_pane_argument_reports() {
+        let mut app = App::new(AppOptions::default());
+        let err = app.run(&Action::parse("pane.toggle files").unwrap(), None);
+        assert!(err.unwrap_err().contains("unknown pane"));
+        let err = app.run(&Action::new("pane.toggle"), None);
+        assert!(err.unwrap_err().contains("needs a pane"));
+    }
+
+    #[test]
+    fn view_marks_focus() {
+        let app = App::new(AppOptions::default());
+        let view = app.view(100);
+        assert_eq!(view.panes.len(), 3);
+        assert!(view.panes.iter().filter(|p| p.focused).count() == 1);
+        assert_eq!(view.status.mode, "normal");
+    }
+}
