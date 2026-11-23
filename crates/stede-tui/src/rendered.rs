@@ -72,29 +72,36 @@ pub fn layout(model: &RenderModel, width: usize, theme: &Theme) -> Vec<Vec<Line<
         }
         // An alert's label goes above its first block. The label row takes
         // any list marker, so the block's own first row is an indent.
-        let mut marker_used = false;
-        if let Some(Container::Alert {
-            kind,
-            title,
-            continuation: false,
-        }) = block
+        // The label row takes the markers of the alert and what's around it
+        // (a list item it sits in); containers inside the alert (a list it
+        // opens with) mark the block's own first row.
+        let mut label_upto = None;
+        if let Some((
+            at,
+            Container::Alert {
+                kind,
+                title,
+                continuation: false,
+            },
+        )) = block
             .containers
             .iter()
-            .find(|c| matches!(c, Container::Alert { .. }))
+            .enumerate()
+            .find(|(_, c)| matches!(c, Container::Alert { .. }))
         {
-            marker_used = true;
+            label_upto = Some(at);
             let label = title
                 .clone()
                 .unwrap_or_else(|| alert_label(*kind).to_owned());
             let style = Style::new()
                 .fg(alert_color(*kind, theme))
                 .add_modifier(Modifier::BOLD);
-            let (first, _) = prefixes(&block.containers, theme, true);
+            let (first, _) = prefixes(&block.containers[..=at], theme, true);
             let mut spans = first;
             spans.push(Span::styled(label, style));
             rows.push(Line::from(spans));
         }
-        rows.extend(block_rows(block, width, theme, marker_used));
+        rows.extend(block_rows(block, width, theme, label_upto));
         out.push(rows);
         previous = Some(block);
     }
@@ -196,9 +203,23 @@ fn spans_width(spans: &[Span]) -> usize {
 }
 
 /// A block's rows, each with its container prefix.
-fn block_rows(block: &Block, width: usize, theme: &Theme, marker_used: bool) -> Vec<Line<'static>> {
+/// `label_upto`: an alert label row already took the markers of containers
+/// `..=label_upto`, so those show as indents on the first row.
+fn block_rows(
+    block: &Block,
+    width: usize,
+    theme: &Theme,
+    label_upto: Option<usize>,
+) -> Vec<Line<'static>> {
     let (head, rest) = prefixes(&block.containers, theme, true);
-    let head = if marker_used { rest.clone() } else { head };
+    let head = match label_upto {
+        Some(at) => {
+            let (_, outer) = prefixes(&block.containers[..=at], theme, true);
+            let (inner, _) = prefixes(&block.containers[at + 1..], theme, true);
+            outer.into_iter().chain(inner).collect()
+        }
+        None => head,
+    };
     let prefix_width = spans_width(&head).max(spans_width(&rest));
     // Very deep nesting leaves at least a few cells for the content.
     let inner = width.saturating_sub(prefix_width).max(width.min(4)).max(1);
@@ -430,7 +451,37 @@ fn table_rows(table: &Table, width: usize, theme: &Theme) -> Vec<Vec<Span<'stati
                 .max(1)
         })
         .collect();
-    let widths = fit_columns(&natural, width - overhead);
+    // A column can't be narrower than its widest character (CJK and emoji
+    // take two cells), or its borders would shift.
+    let minimum: Vec<usize> = (0..columns)
+        .map(|c| {
+            table
+                .header
+                .get(c)
+                .into_iter()
+                .chain(table.rows.iter().filter_map(|r| r.get(c)))
+                .flat_map(&text)
+                .flat_map(|(t, _)| {
+                    t.chars()
+                        .map(|ch| unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0))
+                        .collect::<Vec<_>>()
+                })
+                .max()
+                .unwrap_or(1)
+                .max(1)
+        })
+        .collect();
+    if minimum.iter().sum::<usize>() > width - overhead {
+        return table_fallback(table, width, theme);
+    }
+    let widths: Vec<usize> = fit_columns(&natural, width - overhead)
+        .into_iter()
+        .zip(&minimum)
+        .map(|(w, &m)| w.max(m))
+        .collect();
+    if widths.iter().sum::<usize>() > width - overhead {
+        return table_fallback(table, width, theme);
+    }
     let align = |c: usize| table.align.get(c).copied().unwrap_or(Align::None);
     let rule = |l: &str, m: &str, r: &str| {
         let mut s = String::from(l);
@@ -592,6 +643,22 @@ mod tests {
             vec!["│ Note", "│ a", "", "│ Warning", "│ b"]
         );
         assert_eq!(laid_out("a\tb `x\ty`\n", 20), vec!["a    b x    y"]);
+    }
+
+    #[test]
+    fn an_alert_opening_with_a_list_keeps_the_bullet_on_the_item() {
+        assert_eq!(
+            laid_out("> [!NOTE]\n> - first\n> - second\n", 20),
+            vec!["│ Note", "│ • first", "│ • second"]
+        );
+    }
+
+    #[test]
+    fn wide_characters_keep_table_borders_straight() {
+        use unicode_width::UnicodeWidthStr;
+        let rows = laid_out("| 日本 | x | y |\n|---|---|---|\n| 語 | a | b |\n", 16);
+        let widths: Vec<usize> = rows.iter().map(|r| r.width()).collect();
+        assert!(widths.windows(2).all(|w| w[0] == w[1]), "{rows:#?}");
     }
 
     #[test]

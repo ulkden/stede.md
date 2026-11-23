@@ -80,6 +80,11 @@ impl Rendered {
         self.clamp(height);
     }
 
+    /// Whether it's taller than a pane `height` rows tall.
+    pub fn can_scroll(&self, height: usize) -> bool {
+        self.max_position(height) != (0, 0)
+    }
+
     /// Whether it shows the last full page.
     pub fn at_end(&self, height: usize) -> bool {
         !self.heights.is_empty() && self.position() == self.max_position(height)

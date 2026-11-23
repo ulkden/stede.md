@@ -156,10 +156,16 @@ impl App {
     /// While the raw pane is folded or off, the widths are those it will have
     /// when it opens, so positions set meanwhile still fit it.
     fn raw_columns(&self) -> (usize, usize) {
-        let mut layout = self.layout.clone();
-        if layout.state(PaneId::Raw) != crate::layout::PaneState::Open {
-            layout.focus_pane(PaneId::Raw);
-        }
+        // Only a folded raw pane needs a copy, opened, to measure.
+        let opened;
+        let layout = if self.layout.state(PaneId::Raw) == crate::layout::PaneState::Open {
+            &self.layout
+        } else {
+            let mut copy = self.layout.clone();
+            copy.focus_pane(PaneId::Raw);
+            opened = copy;
+            &opened
+        };
         let inner = layout
             .geometry(self.screen.0)
             .into_iter()
@@ -507,8 +513,10 @@ impl App {
             | "view.page_up" | "view.top" | "view.bottom" => {
                 // The focused reader pane scrolls; the other one follows.
                 if self.layout.focus() == PaneId::Rendered {
-                    self.scroll_rendered(&action.name, times, count);
-                    self.raw_follow_rendered();
+                    // A counted G already put the raw pane on its line.
+                    if !self.scroll_rendered(&action.name, times, count) {
+                        self.raw_follow_rendered();
+                    }
                 } else {
                     self.scroll_raw(&action.name, times, count);
                     self.rendered_follow_raw();
@@ -598,13 +606,15 @@ impl App {
         let Some(doc) = self.doc.as_mut() else {
             return;
         };
-        let raw_end = doc.position() == doc.max_position(width, height);
+        // Only a pane that can scroll can be "at its end": a note that fits
+        // on screen sits at the top, which is also its last page.
+        let raw_max = doc.max_position(width, height);
+        let raw_end = raw_max != (0, 0) && doc.position() == raw_max;
         if self.layout.focus() == PaneId::Rendered {
-            if self.rendered.at_end(height) {
-                let (line, row) = doc.max_position(width, height);
-                doc.set_position(line, row, width, height);
+            if self.rendered.can_scroll(height) && self.rendered.at_end(height) {
+                doc.set_position(raw_max.0, raw_max.1, width, height);
             }
-        } else if raw_end && doc.line_count() > 1 {
+        } else if raw_end {
             self.rendered.to_end(height);
         }
     }
@@ -679,7 +689,8 @@ impl App {
     }
 
     /// Scrolls the rendered pane by rows, half pages or pages, or to an end.
-    fn scroll_rendered(&mut self, name: &str, times: u32, count: Option<u32>) {
+    /// Returns whether it placed the raw pane itself (a counted `gg`/`G`).
+    fn scroll_rendered(&mut self, name: &str, times: u32, count: Option<u32>) -> bool {
         let height = self.raw_height().max(1);
         let n = times as isize;
         let half = (height / 2).max(1) as isize;
@@ -699,10 +710,12 @@ impl App {
                     doc.set_position(line, 0, width, height);
                 }
                 self.rendered_follow_raw();
+                return true;
             }
             "view.top" => self.rendered.set_position(0, 0, height),
             _ => self.rendered.to_end(height),
         }
+        false
     }
 
     /// Scrolls the raw pane by lines, half pages or pages, or to an end.

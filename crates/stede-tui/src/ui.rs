@@ -892,6 +892,36 @@ mod tests {
     }
 
     #[test]
+    fn a_short_note_opens_at_its_top() {
+        let mut app = App::new(AppOptions {
+            file: Some("/n/a.md".into()),
+            ..AppOptions::default()
+        });
+        // Fits the raw pane, but taller rendered (rules and table borders).
+        open_doc(&mut app, "# One\n\n## Two\n\n| a |\n|---|\n| 1 |\n| 2 |\n");
+        render(&mut app, 80, 12);
+        press(&mut app, "j");
+        render(&mut app, 80, 12);
+        assert_eq!(app.view().rendered.position, (0, 0));
+    }
+
+    #[test]
+    fn a_counted_g_from_the_rendered_pane_lands_on_the_line() {
+        let mut app = App::new(AppOptions {
+            file: Some("/n/a.md".into()),
+            ..AppOptions::default()
+        });
+        let code = (1..=40)
+            .map(|i| format!("l{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        open_doc(&mut app, &format!("```\n{code}\n```\n"));
+        render(&mut app, 80, 12);
+        press(&mut app, "<C-l>6G");
+        assert_eq!(app.view().raw.lines[0].0, 6);
+    }
+
+    #[test]
     fn tiny_terminals_do_not_panic() {
         let mut app = App::new(AppOptions::default());
         // Draw only: TestBackend itself can't format a zero-width screen.
