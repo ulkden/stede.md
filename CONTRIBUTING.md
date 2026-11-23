@@ -47,7 +47,7 @@ Declare third-party crates once, in `[workspace.dependencies]` in the root `Carg
 A new release has to be **14 days old** before we take it. Most broken or hijacked releases are caught and yanked within that window.
 
 - **Minor and major releases** (crates, toolchain, actions) wait 14 days. Dependabot's `cooldown` enforces this, so a PR never shows up for a release that is too new.
-- **Patch releases** (bug fixes) can come in at once. Dependabot proposes them without a cooldown.
+- **Patch releases** (bug fixes) to crates and the toolchain can come in at once. Dependabot proposes them without a cooldown. GitHub Actions is the exception: Dependabot only supports one flat cooldown there, so action patches wait 14 days too. Actions only run in CI and never ship in `stede`.
 - **Security fixes** come in at once. Dependabot security updates skip the cooldown, and the daily audit fails as soon as an advisory matches `Cargo.lock`.
 
 If you add a new dependency or bump one by hand, follow the same rule. Pick a release that is at least 14 days old unless it is a patch or security fix. Then run `just deny` to check its license.

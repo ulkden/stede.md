@@ -1,7 +1,8 @@
 # Dependency update policy (details in CONTRIBUTING.md):
 # - Everything is pinned: Cargo.lock, actions by commit SHA, rust-toolchain.toml.
 # - New minor and major releases wait 14 days before Dependabot proposes them.
-# - Patch releases (bug fixes) can be proposed at once.
+# - Patch releases (bug fixes) can be proposed at once (crates and toolchain;
+#   GitHub Actions only supports a flat cooldown, so action patches wait too).
 # - Security updates ignore the cooldown and open as soon as an advisory lands.
 #   They come from "Dependabot security updates" in the repo settings.
 # - PRs open on Mondays and are grouped so each week is one review pass.
@@ -39,11 +40,10 @@ updates:
       interval: weekly
       day: monday
       time: "06:00"
+    # This ecosystem has no per-semver cooldown, so every action release waits
+    # 14 days, patches too. Actions only run in CI; security updates still skip it.
     cooldown:
       default-days: 14
-      semver-major-days: 14
-      semver-minor-days: 14
-      semver-patch-days: 0
     groups:
       actions:
         applies-to: version-updates
