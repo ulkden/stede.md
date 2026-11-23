@@ -127,9 +127,12 @@ def parse_version(v: str) -> tuple[int, int, int, str] | None:
 
 
 def is_patch_bump(old: str, new: str) -> bool:
-    """Same major.minor, higher patch, and neither is a pre-release."""
+    """Same major.minor, higher patch, and neither is a pre-release.
+
+    Under Cargo's semver every 0.0.x release is breaking, so it never counts.
+    """
     a, b = parse_version(old), parse_version(new)
-    if not a or not b:
+    if not a or not b or a[:2] == (0, 0):
         return False
     # Allow build metadata (+...) but not pre-releases (-...).
     if a[3].startswith("-") or b[3].startswith("-"):
@@ -240,9 +243,9 @@ def action_changes(base: str) -> tuple[list[Change], list[str]]:
             if not comment:
                 problems.append(f"{path}: {action}@{ref[:12]} has no `# vX.Y.Z` comment")
                 continue
-            if (ref, comment) in old_pins.get(repo, set()) or (repo, ref) in seen:
+            if (ref, comment) in old_pins.get(repo, set()) or (repo, ref, comment) in seen:
                 continue
-            seen.add((repo, ref))
+            seen.add((repo, ref, comment))
             before = {c for _, c in old_pins.get(repo, set()) if c}
             prev = patch_base(before, comment) or latest(before)
             changes.append(Change("action", repo, prev, comment, note=ref))
@@ -284,11 +287,14 @@ def fetch(url: str, token: str | None = None) -> bytes:
             limited = e.code == 429 or (
                 e.code == 403 and e.headers.get("X-RateLimit-Remaining") == "0"
             )
+            if limited and last and "api.github.com" in url and not token:
+                raise RuntimeError("GitHub API rate limit hit; set GH_TOKEN (or GITHUB_TOKEN) and re-run") from e
             if last or not (limited or e.code >= 500):
                 raise
             time.sleep(retry_delay(e, attempt))
             continue
-        except urllib.error.URLError:
+        except OSError:
+            # URLError, timeouts and connection resets are all OSError.
             if last:
                 raise
         time.sleep(2 * (attempt + 1))

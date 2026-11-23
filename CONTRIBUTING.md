@@ -18,7 +18,7 @@ just install-hooks                   # optional: fmt and spell check before each
 
 | Task | What it does |
 | --- | --- |
-| `just ci` | Everything CI runs. Run it before you push |
+| `just ci` | Everything CI runs except `dep-age`. Run it before you push |
 | `just fmt` | Format the code |
 | `just lint` | Clippy, warnings as errors |
 | `just test` | All tests |
@@ -26,7 +26,7 @@ just install-hooks                   # optional: fmt and spell check before each
 | `just deny` | Licenses, advisories, bans and sources |
 | `just layers` | Fail if `stede-core`, `stede-markdown` or `stede-services` depends on a UI crate |
 | `just msrv` | Build on the minimum supported Rust version (`rust-version` in `Cargo.toml`) |
-| `just dep-age` | Check that every dependency version new since `origin/main` is 14+ days old |
+| `just dep-age` | Check that every dependency version new since `origin/main` is 14+ days old. Run it when you change dependencies |
 
 CI (`.github/workflows/ci.yml`) runs the same recipes on Linux and macOS, with the same tool versions and MSRV, all read from the `justfile` and `Cargo.toml`. A separate daily job (`audit.yml`) checks the committed `Cargo.lock` against the RustSec advisory database.
 
@@ -63,7 +63,9 @@ A version passes if it is 14+ days old. Crates, the toolchain and dev tools also
 - a `stable` toolchain channel
 - an action not pinned to a commit SHA, or a `docker://` action not pinned by `@sha256` digest
 - a version comment that doesn't match its SHA
-- an action tag with no GitHub release (commit dates can be backdated, so they don't prove age) This matters most for the toolchain, where Dependabot can't apply its cooldown because the registry gives no publish date.
+- an action tag with no GitHub release (commit dates can be backdated, so they don't prove age)
+
+The check matters most for the toolchain, where Dependabot can't apply its cooldown because the registry gives no publish date.
 
 A PR that is too new fails until its eligible date, which the check prints. Re-run the job after that date. For a security fix that isn't a patch bump, add the `dependency-age-exempt` label and say why in the PR. The label waives only "too new"; pinning problems still fail. Run it locally with `just dep-age`, which needs Python 3.11+ and network access.
 

@@ -33,8 +33,8 @@ setup:
     rustup toolchain install {{ msrv }} --profile minimal
     cargo install --locked just@{{ just_version }} cargo-deny@{{ deny_version }} cargo-insta@{{ insta_version }} typos-cli@{{ typos_version }}
 
-# Run every check CI runs
-ci: fmt-check lint test doc layers deny typos msrv dep-age
+# Run every check CI runs, except dep-age (needs network and Python 3.11+)
+ci: fmt-check lint test doc layers deny typos msrv
 
 # Format all code
 fmt:

@@ -55,4 +55,5 @@ These checks come from `CLAUDE.md` and `docs/architecture.md`. Breaking a settle
   - The phase actually needs it now, per "Add dependencies as a phase needs them" in `CLAUDE.md`.
 - [ ] Tool versions and the MSRV are defined once: tools in the `justfile`, MSRV in `Cargo.toml`. Workflows read them through `.github/actions/setup`, never hard-code them. Actions are pinned to a commit SHA with a version comment.
 - [ ] A change to `.github/dependabot.yml` waits for GitHub's own `.github/dependabot.yml` check on the PR. It validates against Dependabot's schema, which a local YAML parse doesn't. For example, `semver-*-days` cooldowns are not allowed for `github-actions`.
+- [ ] No build or tool artifacts are committed (`target/`, `__pycache__/`, `*.pyc`, `*.snap.new`, `*.pending-snap`). Check the PR's file list, and add new ones to `.gitignore`.
 - [ ] Docs match the change. Update `CLAUDE.md` if a rule or command changed, `CONTRIBUTING.md` if the workflow changed, and `docs/architecture.md` if the design moved. Stale docs are Minor.
