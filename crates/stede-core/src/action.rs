@@ -181,6 +181,9 @@ impl Registry {
         match (action.name.as_str(), action.args.as_slice()) {
             ("pane.toggle", [pane]) => pane.parse::<crate::layout::PaneId>().map(|_| ()),
             ("pane.toggle", _) => Err("pane.toggle takes one pane: raw, rendered or tree".into()),
+            // The text to type: `"<C-t>" = "search.insert TODO"`.
+            ("search.insert", [_, ..]) => Ok(()),
+            ("search.insert", []) => Err("search.insert takes the text to type".into()),
             (_, []) => Ok(()),
             (name, _) => Err(format!("{name} takes no arguments")),
         }

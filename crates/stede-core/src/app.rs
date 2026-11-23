@@ -711,7 +711,12 @@ impl App {
                 self.mode = Mode::Search;
             }
             "search.insert" => {
-                if let (Some((_, text, _)), Some(c)) = (self.prompt.as_mut(), action.arg()) {
+                // Words of a bound `search.insert a b` join with spaces.
+                let typed = action.args.join(" ");
+                if let (Some((_, text, _)), Some(c)) = (
+                    self.prompt.as_mut(),
+                    Some(typed.as_str()).filter(|t| !t.is_empty()),
+                ) {
                     let room = MAX_PATTERN.saturating_sub(text.chars().count());
                     text.extend(c.chars().take(room));
                     if c.chars().count() > room {
@@ -1958,6 +1963,20 @@ mod tests {
         assert_eq!(app.view().status.prompt.as_deref(), Some("/majorj"));
         press(&mut app, "jk");
         assert_eq!(app.view().status.mode, "normal");
+    }
+
+    #[test]
+    fn search_insert_can_be_bound_with_text() {
+        use crate::config::{Config, Layer};
+        let mut app = search_app();
+        let (config, errors) = Config::from_layers(&[Layer {
+            path: "c.toml".into(),
+            text: "[keys.search]\n\"<C-t>\" = \"search.insert target 3\"\n\"<C-y>\" = \"search.insert\"\n".into(),
+        }]);
+        app.apply_config(&config, &errors);
+        assert!(app.modals().is_open(), "a bare search.insert is reported");
+        press(&mut app, "<Esc>/<C-t>");
+        assert_eq!(app.view().status.prompt.as_deref(), Some("/target 3"));
     }
 
     #[test]

@@ -40,9 +40,9 @@ Each step is one PR through the `stede-pr-review` loop. Tick a step when its PR 
   - `/` and `?`, `n` and `N`, smart case, all matches lit, in either pane
   - Patterns are regexes; one that doesn't parse is searched as plain text. Matches light as you type; `Esc` restores the search before; an empty pattern repeats the last. `<leader>h` clears the lights
   - The rendered pane lights matches in the text as drawn, so markup in a pattern (`**`) only lights in the raw pane
-- [ ] **8. Exit deliverables**
-  - A manual UX test plan for the reader
-  - A first draft of end-user docs
+- [x] **8. Exit deliverables**
+  - A manual UX test plan for the reader: `docs/ux-test/README.md`, with fixtures in `docs/ux-test/fixtures/`
+  - A first draft of end-user docs: `docs/user-guide.md`
 
 ## Phase 0 checks that need real terminals
 

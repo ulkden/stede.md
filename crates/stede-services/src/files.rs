@@ -28,9 +28,13 @@ pub fn open_file(path: &Path, flavor: Option<&str>) -> Result<Document, String> 
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let size = file.metadata().map_err(|e| e.to_string())?.len();
     if size > MAX_FILE_BYTES {
+        // One decimal, rounded up, so a file just over the limit never
+        // reads as the limit itself.
+        let tenths = (size * 10).div_ceil(1024 * 1024);
         return Err(format!(
-            "too large to open ({} MiB; the limit is {} MiB)",
-            size / (1024 * 1024),
+            "too large to open ({}.{} MiB; the limit is {} MiB)",
+            tenths / 10,
+            tenths % 10,
             MAX_FILE_BYTES / (1024 * 1024)
         ));
     }
