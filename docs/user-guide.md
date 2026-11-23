@@ -38,9 +38,9 @@ A pane can be **open**, **folded** to a thin strip at its edge, or **off**. Movi
 
 ## Keys
 
-`<leader>` is `Space` by default. `<C-x>` means Ctrl+x. Press `<leader>?` or `F1` at any time for the cheat sheet, which lists every key active where you are.
+`<leader>` is `Space` by default. `<C-x>` means Ctrl+x. Press `<leader>?` or `F1` for the cheat sheet. It lists every key, with your own bindings, in sections for where each one applies: anywhere, each pane, and windows. The keys for typing a search aren't on it; they're under [Search](#search).
 
-### Anywhere
+### Anywhere (when no window is open)
 
 | Keys | Does |
 | --- | --- |
@@ -64,7 +64,7 @@ A pane can be **open**, **folded** to a thin strip at its edge, or **off**. Movi
 | `gg`, `G` | Go to the top or the end. With a count, go to that line: `50G` |
 | `/`, `?` | Search forward or backward |
 | `n`, `N` | Next or previous match |
-| `Enter` (rendered pane) | Show the top block's source in the raw pane |
+| `Enter` (rendered pane) | Show the top block's source in the raw pane, and move focus there (opening it if folded) |
 
 Counts work as in Vim: `5j` scrolls five lines, and `3n` goes three matches on.
 
@@ -84,6 +84,9 @@ Counts work as in Vim: `5j` scrolls five lines, and `3n` goes three matches on.
 | `Esc` | Close the top window |
 | `<C-c>` | Close every window |
 | `j`, `k` | Scroll |
+| `<leader>?` or `F1` | The cheat sheet, over the window |
+
+While a window is open, only these keys work; the others wait until it's closed.
 
 ## Search
 
@@ -122,7 +125,9 @@ A bad entry is reported with its file, line and key, and skipped. Everything els
 
 ```toml
 flavor = "gfm"                 # or "commonmark" (also accepted as [markdown] flavor)
-theme = "dark"                 # or "light"
+
+[theme]
+name = "dark"                  # or "light" (a bare theme = "light" works too)
 
 [ui]
 tree_side = "right"            # or "left"
@@ -141,7 +146,7 @@ Bindings go under a table per place, as `keys = "action"`:
 
 | Table | Where it applies |
 | --- | --- |
-| `[keys.normal]` | Everywhere |
+| `[keys.normal]` | Everywhere, when no window is open |
 | `[keys.raw]`, `[keys.rendered]`, `[keys.tree]` | While that pane has focus |
 | `[keys.modal]` | In any window (cheat sheet, problems, output) |
 | `[keys.output]` | In output windows |
@@ -160,7 +165,7 @@ Bindings go under a table per place, as `keys = "action"`:
 "<C-c>" = "search.cancel"
 ```
 
-Keys use Vim notation: `<C-x>` (Ctrl), `<A-x>` (Alt), `<S-Tab>`, `<CR>`, `<Esc>`, `<Space>`, `<leader>`, `<F1>`. A sequence is written as a string of keys, such as `gg` or `<C-w>h`. The cheat sheet (`<leader>?`) lists every action name with a one-line description.
+Keys use Vim notation: `<C-x>` (Ctrl), `<A-x>` (Alt), `<S-Tab>`, `<CR>`, `<Esc>`, `<Space>`, `<leader>`, `<F1>`. A sequence is written as a string of keys, such as `gg` or `<C-w>h`. The actions you can bind are listed below, under [Actions](#actions).
 
 In `[keys.search]`, keys you bind no longer type into the pattern. If you start a sequence binding (`jk`) and don't finish it, the keys you typed go into the pattern.
 
@@ -194,6 +199,34 @@ A color is `#rrggbb`, `#rgb`, `default` (the terminal's own), or an ANSI name (`
 | `md.rule` | Thematic breaks and table borders |
 | `md.meta` | Front matter and raw HTML |
 | `search.match`, `search.current` | Behind search matches, and behind matches on the current match's line |
+
+## Actions
+
+| Action | Does |
+| --- | --- |
+| `app.quit` | Quit |
+| `help.keys` | Open the key cheat sheet |
+| `config.problems` | Show the config problems found at start |
+| `pane.focus_left`, `pane.focus_right` | Move focus to the pane on the left or right, opening it if folded |
+| `pane.focus_one` | Fold every pane but this one; again to restore the layout |
+| `pane.toggle raw`, `pane.toggle rendered`, `pane.toggle tree` | Fold or open a pane |
+| `line_numbers.toggle` | Show or hide line numbers in the raw pane |
+| `view.down`, `view.up` | Scroll a line |
+| `view.half_down`, `view.half_up` | Scroll half a page |
+| `view.page_down`, `view.page_up` | Scroll a page |
+| `view.top`, `view.bottom` | Go to the top or the end (with a count, to that line) |
+| `rendered.jump` | Show the top rendered block's source in the raw pane |
+| `tree.down`, `tree.up`, `tree.top`, `tree.bottom` | Move the tree's selection |
+| `tree.open`, `tree.close` | Open or close the selected file or folder |
+| `search.forward`, `search.backward` | Start typing a search |
+| `search.next`, `search.prev` | Next or previous match |
+| `search.off` | Hide search highlights |
+| `search.confirm`, `search.cancel` | Search for the pattern, or stop typing it (`[keys.search]`) |
+| `search.backspace`, `search.clear` | Delete a character of the pattern, or all of it (`[keys.search]`) |
+| `modal.close`, `modal.close_all` | Close the top window, or every window |
+| `modal.scroll_down`, `modal.scroll_up` | Scroll the top window |
+| `modal.reopen_last` | Reopen the last output window |
+| `probe.quit` | Leave `stede --probe` (`[keys.probe]`) |
 
 ## Checking your terminal
 

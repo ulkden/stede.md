@@ -4,7 +4,7 @@ This plan checks by hand what automated tests can't: how the reader looks and fe
 
 ## Before you start
 
-Build once from the repo root, then run everything from the root too, so `.gitignore` in the fixtures applies:
+Build once from the repo root, and run everything from the root too, so the paths in the cases work:
 
 ```sh
 cargo build --locked --release -p stede-tui
@@ -101,7 +101,7 @@ Some cases need a file you make on the spot; each says how.
 | 6.2 ★ | Focus the rendered pane and scroll it | The raw pane follows | |
 | 6.3 | In `long.md`, scroll through the long paragraph from either pane | Both panes move smoothly through it, rather than jumping a whole paragraph at a time | |
 | 6.4 | `G` in either pane, then `gg` | Both panes reach their ends together, even when the rendered pane is taller (the table) | |
-| 6.5 | Scroll the rendered pane to the table, then `Enter` | The raw pane shows the table's source at its top | |
+| 6.5 | Scroll the rendered pane to the table, then `Enter` | The raw pane shows the table's source at its top, and focus moves to it | |
 | 6.6 | Fold the raw pane, scroll the rendered pane a long way, then open the raw pane | The raw pane opens at the matching place, readable, not scrolled past its text | |
 | 6.7 | Resize the terminal while scrolled halfway | Both panes stay at the same place in the document | |
 | 6.8 | Open a short note that fits on screen (`printf '# A\n\n## B\n\n| x |\n|---|\n| 1 |\n' > /tmp/short.md`) | Both panes start at the top, and `j` doesn't send the rendered pane to its bottom | |
@@ -129,7 +129,8 @@ Some cases need a file you make on the spot; each says how.
 
 | # | Do | Expect | ✓ |
 | --- | --- | --- | --- |
-| 8.1 ★ | `<leader>?` (and `F1`) in each pane | The cheat sheet lists the keys active there, each with a description. It scrolls with `j` and `k`, and `Esc` closes it | |
+| 8.1 ★ | `<leader>?` (and `F1`) | The cheat sheet lists every key in sections (anywhere, each pane, windows), each with a description. It scrolls with `j` and `k`, and `Esc` closes it | |
+| 8.1b | With the cheat sheet open, `ZZ` and `<C-l>` | Nothing happens to the app or panes: only window keys work while a window is open | |
 | 8.2 | Type `<C-w>` and wait | The status line shows the pending `<C-w>`. After the timeout (one second) it says `<C-w>` is not bound | |
 | 8.3 | Type `3` then `Esc` | The count is dropped | |
 | 8.4 | Press an unbound key (`x`) | "x is not bound" on the status line | |
@@ -139,16 +140,16 @@ Some cases need a file you make on the spot; each says how.
 
 ## 9. Configuration
 
-Use `docs/ux-test/fixtures/.stede/local.toml`; delete the folder afterwards. For each case, save the file while STEDE.md is open.
+Use `docs/ux-test/fixtures/.stede/local.toml` (git ignores it). For each case, **replace** the file's contents with the case's lines and save while STEDE.md is open. Delete the folder afterwards.
 
 | # | Do | Expect | ✓ |
 | --- | --- | --- | --- |
-| 9.1 | `theme = "light"` | The theme switches at once | |
+| 9.1 | `[theme]` with `name = "light"` | The theme switches at once | |
 | 9.2 | `[theme.colors]` with `"md.heading" = "#ff0000"` | Headings turn red in both panes | |
 | 9.3 | `[keys]` with `leader = ","` | `,?` opens the cheat sheet, and Space no longer does | |
 | 9.4 | `[keys.raw]` with `"J" = "view.half_down"` | `J` scrolls half a page in the raw pane, and the cheat sheet lists it | |
 | 9.5 | `[keys.search]` with `"<C-c>" = "search.cancel"` | `<C-c>` stops typing a search | |
-| 9.6 | A typo: `[ui]` with `tree_sid = "left"`, and a bad value: `theme = 3` | A problems window names the file, the line and the key for each; the rest of the config still applies | |
+| 9.6 | A typo, `[ui]` with `tree_sid = "left"`, and a bad value, `[keys]` with `timeout_ms = 5` | A problems window names the file, the line and the key for each; the rest of the config still applies | |
 | 9.7 | Fix the file and save | The problems clear | |
 | 9.8 | `[ui]` with `animation = true` | A "not built yet" note, not an error | |
 | 9.9 | `flavor = "commonmark"` | Tables and task lists in `tour.md` stop rendering as such (CommonMark has neither) | |
