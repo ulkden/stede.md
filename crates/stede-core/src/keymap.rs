@@ -603,11 +603,15 @@ mod tests {
     }
 
     #[test]
-    fn both_reader_panes_scroll_with_the_same_keys() {
+    fn both_reader_panes_scroll_and_search_with_the_same_keys() {
         let keys = |pane| {
             let mut v: Vec<(&str, &str)> = DEFAULT_BINDINGS
                 .iter()
-                .filter(|(m, s, _, a)| *m == Normal && *s == Pane(pane) && a.starts_with("view."))
+                .filter(|(m, s, _, a)| {
+                    *m == Normal
+                        && *s == Pane(pane)
+                        && (a.starts_with("view.") || a.starts_with("search."))
+                })
                 .map(|(_, _, k, a)| (*k, *a))
                 .collect();
             v.sort();

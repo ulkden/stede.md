@@ -187,15 +187,15 @@ A color is `#rrggbb`, `#rgb`, `default` (the terminal's own), or an ANSI name (`
 
 | Slot | Colors |
 | --- | --- |
-| `ui.accent` | Focused pane border and title, window borders, keys in the cheat sheet |
+| `ui.accent` | Focused pane border and title, window borders, keys in the cheat sheet, Note labels |
 | `ui.border` | Borders of unfocused panes |
 | `ui.dim` | Secondary text: actions in the cheat sheet, window footers |
 | `ui.strip.fg`, `ui.strip.bg` | A folded pane's strip |
 | `ui.status.fg`, `ui.status.bg` | The mode badge in the status line |
 | `ui.linenr` | Line numbers in the raw pane |
-| `md.heading` | Headings |
-| `md.code`, `md.code.bg` | Code, and the band behind code blocks in the rendered pane |
-| `md.quote` | Block quotes and alerts |
+| `md.heading` | Headings, and Warning and Caution labels |
+| `md.code`, `md.code.bg` | Code (and Tip labels), and the band behind code blocks in the rendered pane |
+| `md.quote` | Block quotes, the alerts' bar, and Important labels |
 | `md.rule` | Thematic breaks and table borders |
 | `md.meta` | Front matter and raw HTML |
 | `search.match`, `search.current` | Behind search matches, and behind matches on the current match's line |
@@ -223,6 +223,7 @@ A color is `#rrggbb`, `#rgb`, `default` (the terminal's own), or an ANSI name (`
 | `search.off` | Hide search highlights |
 | `search.confirm`, `search.cancel` | Search for the pattern, or stop typing it (`[keys.search]`) |
 | `search.backspace`, `search.clear` | Delete a character of the pattern, or all of it (`[keys.search]`) |
+| `search.insert <text>` | Type text into the pattern, as a key bound in `[keys.search]` (`"<C-t>" = "search.insert TODO"`) |
 | `modal.close`, `modal.close_all` | Close the top window, or every window |
 | `modal.scroll_down`, `modal.scroll_up` | Scroll the top window |
 | `modal.reopen_last` | Reopen the last output window |

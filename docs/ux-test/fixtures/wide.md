@@ -4,9 +4,12 @@
 
 Emoji take two cells too: 🎉 🚀 ✅
 
+A line of prose with a tab	here, and	another.
+
 | 名前 | 説明 |
 | --- | --- |
 | 東京 | 首都 |
 | 🍣 | 寿司 |
+| tab | a	cell |
 
-	A line that starts with a tab, and	one	in the middle.
+	An indented code block that starts with a tab, and	one	inside.

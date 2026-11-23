@@ -16,7 +16,7 @@ The fixtures in `docs/ux-test/fixtures/`:
 | File | Exercises |
 | --- | --- |
 | `tour.md` | Every GFM block: front matter, headings, lists, tasks, code (with a tab), quotes, alerts, a table, a rule, HTML, a footnote |
-| `wide.md` | CJK, emoji and tabs, in prose and in a table |
+| `wide.md` | CJK, emoji and tabs: in prose, in a table cell and in a code block |
 | `long.md` | One very long source line (with `needle` near its end), then enough lines to scroll |
 | `notes.txt` | A non-Markdown file |
 | `guides/`, `guides/nested/` | Folders in the tree |
@@ -49,7 +49,7 @@ Some cases need a file you make on the spot; each says how.
 | 2.4 | `<leader>z` in the raw pane, then `<leader>z` again | Only the raw pane shows, then the layout comes back as it was | |
 | 2.5 | Try to fold the last open pane | It refuses, with a message, instead of leaving an empty screen | |
 | 2.6 ★ | Resize the terminal from wide to very narrow (about 20 columns) and very short (about 5 rows), and back | No crash, no garbled borders; panes shrink, and text rewraps. It recovers fully when the terminal is large again | |
-| 2.7 | Set `[ui] tree_side = "left"` in `.stede/local.toml`, saved while STEDE.md is open | The tree moves to the left at once | |
+| 2.7 | Set `[ui] tree_side = "left"` in `docs/ux-test/fixtures/.stede/local.toml` (see section 9), saved while STEDE.md is open | The tree moves to the left at once | |
 
 ## 3. The file tree
 
@@ -73,7 +73,7 @@ Some cases need a file you make on the spot; each says how.
 | 4.3 ★ | `j`, `k`, `<C-d>`, `<C-u>`, `<C-f>`, `<C-b>`, `PageDown`, `PageUp`, `gg` and `G` | Each scrolls as named. `G` keeps the last page full, with no empty rows past the end | |
 | 4.4 | `5j`, `3k`, `20G`, `1G` | Counts repeat; `20G` puts line 20 at the top, unless the last page is shorter | |
 | 4.5 ★ | Open `long.md` and scroll through the long line with `j` | It wraps by words onto many rows, and `j` moves one row at a time through it. Its line number shows only on its first row | |
-| 4.6 ★ | Open `wide.md` | CJK and emoji take two cells each and never split. The tab becomes spaces, and nothing spills past the border | |
+| 4.6 ★ | Open `wide.md` | CJK and emoji take two cells each and never split. Tabs become spaces in both panes (in prose, the table and the code block), and nothing spills past the border | |
 | 4.7 | Edit `tour.md` in another editor and save, while it's open and scrolled down | It reloads within about a second and keeps your place | |
 | 4.8 | Make a file over 20 MiB (`head -c 21000000 /dev/zero \| tr '\0' 'a' > /tmp/big.md`) and open it | The pane says it's too large. No hang | |
 | 4.9 | Open a binary file (`/bin/ls`) | The pane says it looks binary | |
@@ -154,7 +154,7 @@ Use `docs/ux-test/fixtures/.stede/local.toml` (git ignores it). For each case, *
 | 9.8 | `[ui]` with `animation = true` | A "not built yet" note, not an error | |
 | 9.9 | `flavor = "commonmark"` | Tables and task lists in `tour.md` stop rendering as such (CommonMark has neither) | |
 | 9.10 | Start with a broken user config (`~/.config/stede/config.toml`, or under `$XDG_CONFIG_HOME`) | It starts anyway, shows the problems, and `<leader>c` shows them again | |
-| 9.11 | `TERM=xterm-256color COLORTERM= stede …` and `TERM=xterm stede …` | Colors downgrade to 256 and 16 colors but stay readable | |
+| 9.11 | `TERM=xterm-256color COLORTERM= stede …` and `TERM=xterm COLORTERM= stede …` | Colors downgrade to 256 and 16 colors but stay readable | |
 
 ## 10. Feel
 
