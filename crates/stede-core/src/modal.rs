@@ -177,6 +177,14 @@ impl ModalStack {
         }
     }
 
+    /// Closes every open modal with this id, wherever it sits. Returns
+    /// whether one was open.
+    pub fn remove(&mut self, id: &str) -> bool {
+        let before = self.stack.len();
+        self.stack.retain(|m| m.id != Some(id));
+        self.stack.len() != before
+    }
+
     /// Where the modal with this id sits, counting from the bottom.
     pub fn position(&self, id: &str) -> Option<usize> {
         self.stack.iter().position(|m| m.id == Some(id))

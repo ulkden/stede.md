@@ -296,12 +296,17 @@ fn draw_status(frame: &mut Frame, area: Rect, view: &View, theme: &Theme) {
     if !view.status.pending.is_empty() {
         spans.push(Span::raw(format!(" {}", view.status.pending)));
     }
-    if let Some(file) = &view.status.file {
-        spans.push(Span::styled(format!(" {file}"), Style::new().fg(theme.dim)));
-    }
+    // The message first: it's what needs reading now, and the file name
+    // after it can be cut at the edge without losing much.
     if let Some(message) = &view.status.message {
         spans.push(Span::raw("  "));
         spans.push(Span::raw(message.clone()));
+    }
+    if let Some(file) = &view.status.file {
+        spans.push(Span::styled(
+            format!("  {file}"),
+            Style::new().fg(theme.dim),
+        ));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }

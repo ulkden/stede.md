@@ -8,6 +8,8 @@
 
 use std::path::PathBuf;
 
+use crate::config::{ConfigError, Layer};
+
 /// One entry in a folder listing.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
@@ -36,6 +38,10 @@ pub enum ServiceEvent {
     },
     /// These folders changed on disk.
     Changed(Vec<PathBuf>),
-    /// A config file changed on disk.
-    ConfigChanged,
+    /// A config file changed on disk (or its folder appeared). The services
+    /// read every layer again, off the input loop.
+    ConfigChanged {
+        layers: Vec<Layer>,
+        errors: Vec<ConfigError>,
+    },
 }

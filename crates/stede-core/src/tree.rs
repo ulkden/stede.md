@@ -103,18 +103,15 @@ impl Tree {
         true
     }
 
-    /// Folders among `changed` (or the folders holding them) that are listed
-    /// and should be listed again.
+    /// Folders among `changed` (or the folders holding them) that the tree
+    /// has asked for and should be listed again. A folder still loading
+    /// counts: its listing may have been read before the change.
     pub fn stale(&self, changed: &[PathBuf]) -> Vec<PathBuf> {
         let mut dirs: Vec<PathBuf> = Vec::new();
         for path in changed {
             let candidates = [Some(path.as_path()), path.parent()];
             for dir in candidates.into_iter().flatten() {
-                if matches!(
-                    self.listings.get(dir),
-                    Some(Listing::Loaded(_) | Listing::Failed(_))
-                ) && !dirs.iter().any(|d| d == dir)
-                {
+                if self.listings.contains_key(dir) && !dirs.iter().any(|d| d == dir) {
                     dirs.push(dir.to_path_buf());
                 }
             }
@@ -367,6 +364,16 @@ mod tests {
         assert_eq!(t.selected(), Some(Path::new("/p/docs")));
         assert_eq!(t.scroll_for(4), 0);
         assert!(!t.select_parent(), "the root isn't a row");
+    }
+
+    #[test]
+    fn changes_during_a_listing_ask_again() {
+        let mut t = sample();
+        t.expand(Path::new("/p/docs"));
+        assert_eq!(
+            t.stale(&["/p/docs/new.md".into()]),
+            vec![PathBuf::from("/p/docs")]
+        );
     }
 
     #[test]

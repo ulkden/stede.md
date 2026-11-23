@@ -21,6 +21,9 @@ use crate::view::{PaneView, STATUS_ROWS, StatusView, TreeView, View};
 /// Identifies the key cheat sheet among open modals, so its hotkey toggles it.
 const CHEAT_SHEET_ID: &str = "help.keys";
 
+/// Identifies the config problems modal, so a reload replaces it.
+const CONFIG_PROBLEMS_ID: &str = "config.problems";
+
 /// How long to wait for the next key of an ambiguous sequence (Vim's `timeoutlen`).
 pub const DEFAULT_KEY_TIMEOUT: Duration = Duration::from_millis(1000);
 
@@ -117,6 +120,8 @@ impl App {
         self.key_timeout = config.key_timeout;
         self.layout.set_tree_side(config.tree_side);
         self.config_problems = None;
+        // A reload replaces the problems shown, or clears them once fixed.
+        self.layout.modals_mut().remove(CONFIG_PROBLEMS_ID);
         let app = self;
         let all: Vec<&crate::config::ConfigError> =
             config_errors.iter().chain(&key_errors).collect();
@@ -129,7 +134,8 @@ impl App {
                 .keys_for(Mode::Normal, Scope::Global, "config.problems")
                 .map(|k| format_keys(&k))
                 .unwrap_or_else(|| "config.problems".into());
-            let modal = Modal::output("Config problems", ModalBody::Text(problem_lines(&all)));
+            let modal = Modal::output("Config problems", ModalBody::Text(problem_lines(&all)))
+                .with_id(CONFIG_PROBLEMS_ID);
             if errors > 0 {
                 // Errors mean config was skipped: show them at once.
                 app.notify(format!(
@@ -169,7 +175,7 @@ impl App {
                 Handled::default()
             }
             // Re-reading config files is the front end's job (it found them).
-            ServiceEvent::ConfigChanged => Handled::default(),
+            ServiceEvent::ConfigChanged { .. } => Handled::default(),
         }
     }
 
@@ -459,7 +465,15 @@ impl App {
                 mode: self.mode.name(),
                 pending: self.resolver.pending(),
                 message: self.message.clone(),
-                file: self.current_file.as_ref().map(|p| p.display().to_string()),
+                // Relative to the tree's folder when it's inside it: shorter.
+                file: self.current_file.as_ref().map(|p| {
+                    self.tree
+                        .root()
+                        .and_then(|r| p.strip_prefix(r).ok())
+                        .unwrap_or(p)
+                        .display()
+                        .to_string()
+                }),
             },
         }
     }
@@ -817,7 +831,7 @@ mod tests {
             result: Ok(vec![entry("/p/docs", true), entry("/p/a.md", false)]),
         });
         assert_eq!(app.view().tree.selected, Some(1));
-        assert_eq!(app.view().status.file.as_deref(), Some("/p/a.md"));
+        assert_eq!(app.view().status.file.as_deref(), Some("a.md"));
     }
 
     #[test]
@@ -832,6 +846,26 @@ mod tests {
         assert_eq!(app.layout().order().next(), Some(PaneId::Tree));
         press(&mut app, "Q");
         assert!(app.should_quit());
+    }
+
+    #[test]
+    fn reloading_replaces_the_problems_modal() {
+        use crate::config::{Config, Layer};
+        let bad = |line: &str| {
+            Config::from_layers(&[Layer {
+                path: "c.toml".into(),
+                text: line.into(),
+            }])
+        };
+        let mut app = App::new(AppOptions::default());
+        for _ in 0..3 {
+            let (config, errors) = bad("[ui]\nbogus = 1\n");
+            app.apply_config(&config, &errors);
+        }
+        assert_eq!(app.modals().len(), 1, "replaced, not stacked");
+        let (config, errors) = bad("");
+        app.apply_config(&config, &errors);
+        assert!(!app.modals().is_open(), "fixed: the stale list goes");
     }
 
     #[test]

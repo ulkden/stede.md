@@ -157,19 +157,12 @@ fn open(path: Option<PathBuf>) -> io::Result<()> {
     });
     let services = Services::start(sink)?;
     let start = path.clone().unwrap_or_else(|| PathBuf::from("."));
-    services.watch_config(&config::layer_paths(&start, |k| std::env::var(k).ok()));
+    services.watch_config(config_files(Some(&start)));
 
     // try_init returns an error (no TTY, say) instead of panicking, and installs
     // the panic hook that restores the terminal.
     let mut terminal = ratatui::try_init()?;
-    let result = run(
-        &mut terminal,
-        &mut app,
-        &mut theme,
-        &rx,
-        &services,
-        path.as_deref(),
-    );
+    let result = run(&mut terminal, &mut app, &mut theme, &rx, &services);
     ratatui::restore();
     result
 }
@@ -195,11 +188,28 @@ const PLANNED_FLAVORS: &[&str] = &["obsidian", "mkdocs"];
 
 /// Reads the config layers for an opened path (or the current folder) and
 /// merges them. The flavor name is checked here, by the Markdown crate.
-fn load_config(path: Option<&std::path::Path>) -> (Config, Vec<ConfigError>) {
+/// The config files for an opened path (or the current folder), in layer
+/// order, existing or not: what's read at start and watched after.
+fn config_files(path: Option<&std::path::Path>) -> Vec<PathBuf> {
     let start = path.unwrap_or_else(|| std::path::Path::new("."));
-    let paths = config::layer_paths(start, |k| std::env::var(k).ok());
-    let (layers, mut errors) = config::read_layers(&paths);
-    let (config, more) = Config::from_layers(&layers);
+    config::config_candidates(start, |k| std::env::var(k).ok())
+}
+
+/// Reads and merges the config layers (at start; reloads get their layers
+/// from the services, read off the input loop).
+fn load_config(path: Option<&std::path::Path>) -> (Config, Vec<ConfigError>) {
+    let (layers, errors) = config::read_layers(&config_files(path));
+    merge_config(&layers, errors)
+}
+
+/// Merges config layers and checks what the core can't: the flavor name.
+/// No I/O, so it's safe on the input loop.
+fn merge_config(
+    layers: &[config::Layer],
+    read_errors: Vec<ConfigError>,
+) -> (Config, Vec<ConfigError>) {
+    let mut errors = read_errors;
+    let (config, more) = Config::from_layers(layers);
     errors.extend(more);
     if let Some((name, origin)) = &config.flavor
         && let Err(e) = name.parse::<Flavor>()
@@ -240,7 +250,6 @@ fn run(
     theme: &mut ui::Theme,
     events: &mpsc::Receiver<AppEvent>,
     services: &Services,
-    path: Option<&std::path::Path>,
 ) -> io::Result<()> {
     // When a key sequence is ambiguous: the moment its timeout runs out. Other
     // events (resize, service results) don't push the deadline back.
@@ -273,9 +282,10 @@ fn run(
             }
             // Resize and other input: just draw again.
             Some(AppEvent::Input(_)) => None,
-            Some(AppEvent::Service(ServiceEvent::ConfigChanged)) => {
-                // Live reload: read every layer again. Problems show as at start.
-                let (config, errors) = load_config(path);
+            Some(AppEvent::Service(ServiceEvent::ConfigChanged { layers, errors })) => {
+                // Live reload: the services read the layers again; merging
+                // them is pure. Problems show as at start.
+                let (config, errors) = merge_config(&layers, errors);
                 *theme = theme_for(&config);
                 app.apply_config(&config, &errors);
                 None

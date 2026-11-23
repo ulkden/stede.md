@@ -3,15 +3,15 @@
 //! (polling on `/mnt/*` paths in WSL, where inotify doesn't fire). Later, the
 //! linter hub and external commands.
 //!
-//! Work runs on a tokio runtime (`spawn_blocking` for file system calls) and
-//! reports back through a sink the front end provides, so nothing here
-//! blocks the input loop. No UI code here.
+//! Work runs on a tokio runtime (`spawn_blocking` for file system calls,
+//! watching included) and reports back through a sink the front end
+//! provides, so nothing here blocks the input loop. No UI code here.
 
 mod files;
 
 pub use files::list_dir;
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -20,10 +20,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use notify::{PollWatcher, RecommendedWatcher, RecursiveMode, Watcher};
+use stede_core::config::read_layers;
 use stede_core::io::{Request, ServiceEvent};
 
-/// Where results go. Called from service threads; it may block briefly
-/// (a bounded channel), never for long.
+/// Where results go. Called from service threads. It may block while the
+/// front end's queue is full; once the front end is gone it must return.
 pub type Sink = Arc<dyn Fn(ServiceEvent) + Send + Sync>;
 
 /// How long changes collect before they're reported as one event, so a
@@ -35,18 +36,31 @@ const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 /// The running services.
 pub struct Services {
-    runtime: tokio::runtime::Runtime,
-    sink: Sink,
-    watch: Mutex<Watch>,
-    config_files: Arc<Mutex<HashSet<PathBuf>>>,
+    /// Taken on drop, to shut down without waiting for stuck work.
+    runtime: Option<tokio::runtime::Runtime>,
+    shared: Arc<Shared>,
 }
 
-/// File watchers, made on first use, and what they watch.
+/// State the runtime's tasks and the debouncer share.
+struct Shared {
+    sink: Sink,
+    watch: Mutex<Watch>,
+    /// Config files to watch, in layer order.
+    config_files: Mutex<Vec<PathBuf>>,
+    /// Folders being listed, and whether another listing was asked for
+    /// meanwhile. One listing per folder at a time keeps results in order.
+    inflight: Mutex<HashMap<PathBuf, bool>>,
+}
+
+/// File watchers, made on first use.
 struct Watch {
     events: mpsc::Sender<notify::Result<notify::Event>>,
     native: Option<RecommendedWatcher>,
     poll: Option<PollWatcher>,
-    watched: HashSet<PathBuf>,
+    /// Each watched folder's resolved path to the path as given. Watchers
+    /// (FSEvents on macOS) may report resolved paths, such as
+    /// `/private/tmp/...` for `/tmp/...`; events are mapped back with this.
+    resolved: HashMap<PathBuf, PathBuf>,
 }
 
 impl Services {
@@ -57,111 +71,167 @@ impl Services {
             .thread_name("stede-services")
             .build()?;
         let (events, raw) = mpsc::channel();
-        let config_files = Arc::new(Mutex::new(HashSet::new()));
-        {
-            let sink = Arc::clone(&sink);
-            let config_files = Arc::clone(&config_files);
-            thread::Builder::new()
-                .name("stede-watch".into())
-                .spawn(move || debounce(&raw, &sink, &config_files))?;
-        }
-        Ok(Self {
-            runtime,
+        let shared = Arc::new(Shared {
             sink,
             watch: Mutex::new(Watch {
                 events,
                 native: None,
                 poll: None,
-                watched: HashSet::new(),
+                resolved: HashMap::new(),
             }),
-            config_files,
+            config_files: Mutex::new(Vec::new()),
+            inflight: Mutex::new(HashMap::new()),
+        });
+        {
+            let shared = Arc::clone(&shared);
+            thread::Builder::new()
+                .name("stede-watch".into())
+                .spawn(move || debounce(&raw, &shared))?;
+        }
+        Ok(Self {
+            runtime: Some(runtime),
+            shared,
         })
+    }
+
+    fn runtime(&self) -> &tokio::runtime::Runtime {
+        self.runtime.as_ref().expect("the runtime lives until drop")
     }
 
     /// Takes a request from the core.
     pub fn handle(&self, request: Request) {
         match request {
             Request::ListDir(dir) => {
-                // Watch first, so a change during the listing isn't missed.
-                self.watch_dir(&dir);
-                let sink = Arc::clone(&self.sink);
-                self.runtime.spawn_blocking(move || {
-                    let result = list_dir(&dir);
-                    sink(ServiceEvent::Listed { dir, result });
-                });
+                {
+                    let mut inflight = self.shared.inflight.lock().expect("inflight lock");
+                    if let Some(again) = inflight.get_mut(&dir) {
+                        // Listed again as soon as the current one is done.
+                        *again = true;
+                        return;
+                    }
+                    inflight.insert(dir.clone(), false);
+                }
+                let shared = Arc::clone(&self.shared);
+                self.runtime()
+                    .spawn_blocking(move || shared.list_until_settled(dir));
             }
             // Loading files into the panes comes with the reader panes.
             Request::OpenFile(_) => {}
         }
     }
 
-    /// Watches config files, reporting `ConfigChanged` when one changes.
-    /// Their folders are watched, so a file that doesn't exist yet counts
-    /// once it's created.
-    pub fn watch_config(&self, files: &[PathBuf]) {
-        {
-            let mut set = self.config_files.lock().expect("config set lock");
-            set.extend(files.iter().cloned());
+    /// Watches config files, reporting `ConfigChanged` (with every layer read
+    /// again) when one changes. Each file's nearest existing folder is
+    /// watched, so a file, or a folder for it, created later still counts.
+    pub fn watch_config(&self, files: Vec<PathBuf>) {
+        *self.shared.config_files.lock().expect("config lock") = files;
+        let shared = Arc::clone(&self.shared);
+        self.runtime()
+            .spawn_blocking(move || shared.watch_config_folders());
+    }
+}
+
+impl Drop for Services {
+    fn drop(&mut self) {
+        // Don't wait for listings stuck on a slow or hung mount: quitting
+        // must not hang after the terminal is restored.
+        if let Some(runtime) = self.runtime.take() {
+            runtime.shutdown_background();
         }
-        for dir in files.iter().filter_map(|f| f.parent()) {
-            if dir.is_dir() {
+    }
+}
+
+impl Shared {
+    /// Lists a folder, again and again while more listings were asked for
+    /// during one, then reports each in order.
+    fn list_until_settled(&self, dir: PathBuf) {
+        loop {
+            // Watch first, so a change during the listing isn't missed; and
+            // every time, so a folder deleted and made again is watched again.
+            self.watch_dir(&dir);
+            let result = list_dir(&dir);
+            (self.sink)(ServiceEvent::Listed {
+                dir: dir.clone(),
+                result,
+            });
+            let mut inflight = self.inflight.lock().expect("inflight lock");
+            if inflight.get(&dir) == Some(&true) {
+                inflight.insert(dir.clone(), false);
+            } else {
+                inflight.remove(&dir);
+                return;
+            }
+        }
+    }
+
+    fn watch_config_folders(&self) {
+        let files = self.config_files.lock().expect("config lock").clone();
+        for file in &files {
+            if let Some(dir) = file.ancestors().skip(1).find(|d| d.is_dir()) {
                 self.watch_dir(dir);
             }
         }
     }
 
     fn watch_dir(&self, dir: &Path) {
+        let resolved = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
         let mut watch = self.watch.lock().expect("watch lock");
-        if !watch.watched.insert(dir.to_path_buf()) {
-            return;
-        }
+        watch.resolved.insert(resolved, dir.to_path_buf());
         let events = watch.events.clone();
-        let result = if needs_polling(dir) {
+        // A folder that can't be watched still lists; it just won't refresh
+        // on its own until it's listed (and watched) again.
+        if needs_polling(dir) {
             if watch.poll.is_none() {
                 let config = notify::Config::default().with_poll_interval(POLL_INTERVAL);
                 watch.poll = PollWatcher::new(events, config).ok();
             }
-            watch
-                .poll
-                .as_mut()
-                .map(|w| w.watch(dir, RecursiveMode::NonRecursive))
+            if let Some(w) = watch.poll.as_mut() {
+                let _ = w.watch(dir, RecursiveMode::NonRecursive);
+            }
         } else {
             if watch.native.is_none() {
                 watch.native = notify::recommended_watcher(events).ok();
             }
-            watch
-                .native
-                .as_mut()
-                .map(|w| w.watch(dir, RecursiveMode::NonRecursive))
-        };
-        // A folder that can't be watched still lists; it just won't refresh
-        // on its own. Forget it so a later listing tries again.
-        if !matches!(result, Some(Ok(()))) {
-            watch.watched.remove(dir);
+            if let Some(w) = watch.native.as_mut() {
+                let _ = w.watch(dir, RecursiveMode::NonRecursive);
+            }
         }
+    }
+
+    /// A watcher's path as the tree knows it: a resolved prefix is mapped
+    /// back to the path that was watched.
+    fn as_given(&self, path: PathBuf) -> PathBuf {
+        let watch = self.watch.lock().expect("watch lock");
+        if watch.resolved.values().any(|given| path.starts_with(given)) {
+            return path;
+        }
+        watch
+            .resolved
+            .iter()
+            .filter(|(resolved, given)| resolved != given && path.starts_with(resolved))
+            .max_by_key(|(resolved, _)| resolved.as_os_str().len())
+            .and_then(|(resolved, given)| {
+                path.strip_prefix(resolved)
+                    .ok()
+                    .map(|rest| given.join(rest))
+            })
+            .unwrap_or(path)
     }
 }
 
-/// Collects raw watcher events and reports them in batches: the folders that
-/// changed, and whether a config file did.
-fn debounce(
-    raw: &mpsc::Receiver<notify::Result<notify::Event>>,
-    sink: &Sink,
-    config_files: &Mutex<HashSet<PathBuf>>,
-) {
+/// Collects raw watcher events and reports them in batches: the paths that
+/// changed, and the config layers again if a config file (or a folder on
+/// the way to one) did.
+fn debounce(raw: &mpsc::Receiver<notify::Result<notify::Event>>, shared: &Shared) {
     // Ends when every sender (the watchers and `Services`) is gone.
     while let Ok(first) = raw.recv() {
-        let mut dirs: Vec<PathBuf> = Vec::new();
-        let mut config_changed = false;
+        let mut paths: Vec<PathBuf> = Vec::new();
         let mut take = |event: notify::Result<notify::Event>| {
             let Ok(event) = event else { return };
-            let configs = config_files.lock().expect("config set lock");
             for path in event.paths {
-                if configs.contains(&path) {
-                    config_changed = true;
-                }
-                if !dirs.contains(&path) {
-                    dirs.push(path);
+                let path = shared.as_given(path);
+                if !paths.contains(&path) {
+                    paths.push(path);
                 }
             }
         };
@@ -170,15 +240,23 @@ fn debounce(
         while let Some(left) = until.checked_duration_since(Instant::now()) {
             match raw.recv_timeout(left) {
                 Ok(event) => take(event),
-                Err(mpsc::RecvTimeoutError::Timeout) => break,
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(_) => break,
             }
         }
-        if !dirs.is_empty() {
-            sink(ServiceEvent::Changed(dirs));
+        if paths.is_empty() {
+            continue;
         }
+        let files = shared.config_files.lock().expect("config lock").clone();
+        let config_changed = paths
+            .iter()
+            .any(|p| files.iter().any(|f| f == p || f.starts_with(p)));
+        (shared.sink)(ServiceEvent::Changed(paths));
         if config_changed {
-            sink(ServiceEvent::ConfigChanged);
+            // Folders that now exist get watched, then every layer is read
+            // again here, off the input loop.
+            shared.watch_config_folders();
+            let (layers, errors) = read_layers(&files);
+            (shared.sink)(ServiceEvent::ConfigChanged { layers, errors });
         }
     }
 }
@@ -253,14 +331,97 @@ mod tests {
     }
 
     #[test]
-    fn config_changes_are_reported() {
-        let dir = temp("config");
-        let file = dir.join("config.toml");
+    fn repeated_listings_settle_on_the_latest() {
+        let dir = temp("burst");
         let (sink, rx) = collecting();
         let services = Services::start(sink).unwrap();
-        services.watch_config(std::slice::from_ref(&file));
+        for i in 0..5 {
+            std::fs::write(dir.join(format!("{i}.md")), "x").unwrap();
+            services.handle(Request::ListDir(dir.clone()));
+        }
+        // However the requests overlapped, the last listing reported sees all five.
+        let mut last = None;
+        while let Ok(e) = rx.recv_timeout(Duration::from_millis(1500)) {
+            if let ServiceEvent::Listed {
+                result: Ok(entries),
+                ..
+            } = e
+            {
+                last = Some(entries.len());
+            }
+        }
+        assert_eq!(last, Some(5));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn recreated_folders_are_watched_again() {
+        let dir = temp("recreate");
+        let sub = dir.join("docs");
+        std::fs::create_dir(&sub).unwrap();
+        let (sink, rx) = collecting();
+        let services = Services::start(sink).unwrap();
+        services.handle(Request::ListDir(sub.clone()));
+        assert!(wait_for(&rx, |e| matches!(e, ServiceEvent::Listed { .. })));
+        std::fs::remove_dir_all(&sub).unwrap();
+        std::fs::create_dir(&sub).unwrap();
+        services.handle(Request::ListDir(sub.clone()));
+        assert!(wait_for(&rx, |e| matches!(e, ServiceEvent::Listed { .. })));
+        std::fs::write(sub.join("new.md"), "x").unwrap();
+        assert!(wait_for(
+            &rx,
+            |e| matches!(e, ServiceEvent::Changed(paths) if paths.iter().any(|p| p.ends_with("new.md")))
+        ));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn config_changes_are_read_and_reported() {
+        let dir = temp("config");
+        // The folder for the config doesn't exist yet: creating it counts.
+        let file = dir.join("stede").join("config.toml");
+        let (sink, rx) = collecting();
+        let services = Services::start(sink).unwrap();
+        services.watch_config(vec![file.clone()]);
+        std::thread::sleep(Duration::from_millis(200));
+        std::fs::create_dir(dir.join("stede")).unwrap();
+        // Creating the folder is reported (with no layers yet)...
+        assert!(wait_for(&rx, |e| matches!(
+            e,
+            ServiceEvent::ConfigChanged { .. }
+        )));
+        std::thread::sleep(Duration::from_millis(300));
         std::fs::write(&file, "[ui]\n").unwrap();
-        assert!(wait_for(&rx, |e| *e == ServiceEvent::ConfigChanged));
+        // ...and then the file inside it, with its text.
+        assert!(wait_for(&rx, |e| matches!(
+            e,
+            ServiceEvent::ConfigChanged { layers, .. } if layers.len() == 1 && layers[0].text == "[ui]\n"
+        )));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn resolved_paths_map_back_to_the_watched_one() {
+        let dir = temp("symlink");
+        let link = dir.with_file_name(format!(
+            "{}-link",
+            dir.file_name().unwrap().to_string_lossy()
+        ));
+        let _ = std::fs::remove_file(&link);
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&dir, &link).unwrap();
+        let (sink, _rx) = collecting();
+        let services = Services::start(sink).unwrap();
+        services.shared.watch_dir(&link);
+        assert_eq!(
+            services.shared.as_given(dir.join("x.md")),
+            link.join("x.md")
+        );
+        assert_eq!(
+            services.shared.as_given(link.join("y.md")),
+            link.join("y.md")
+        );
+        let _ = std::fs::remove_file(&link);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
