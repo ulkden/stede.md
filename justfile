@@ -20,7 +20,8 @@ msrv := `sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml`
 
 # Crates that hold no UI code, and the UI crates they must never pull in.
 headless_crates := "stede-core stede-markdown stede-services"
-ui_crates := "ratatui|crossterm|iced|slint|egui|gpui"
+# Terminal UI, GUI and windowing crates; `tui` is ratatui's old name.
+ui_crates := "ratatui|tui|crossterm|termion|termwiz|cursive|iced|slint|egui|eframe|gpui|winit|tao"
 
 [private]
 default:
@@ -83,7 +84,14 @@ layers:
             echo "error: cargo tree failed for $crate" >&2
             exit 1
         fi
-        if hits=$(grep -E '^({{ ui_crates }})([-_][a-z0-9_-]+)? v' <<<"$tree"); then
+        # grep exits 1 for "no match" (good) and 2 for an error, which must not pass.
+        rc=0
+        hits=$(grep -E '^({{ ui_crates }})([-_][a-z0-9_-]+)? v' <<<"$tree") || rc=$?
+        if [ "$rc" -gt 1 ]; then
+            echo "error: grep failed checking $crate; check ui_crates in the justfile" >&2
+            exit 1
+        fi
+        if [ "$rc" -eq 0 ]; then
             echo "error: $crate must not depend on a UI crate:" >&2
             echo "$hits" | sort -u >&2
             status=1

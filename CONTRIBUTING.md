@@ -7,8 +7,8 @@ The design is in [`docs/architecture.md`](docs/architecture.md) and the rules th
 You need [rustup](https://rustup.rs). The toolchain is pinned in `rust-toolchain.toml`, and rustup picks it up inside the repo.
 
 ```sh
-cargo install --locked just@1.59.0   # task runner
-just setup                           # pinned toolchain, MSRV toolchain, cargo-deny, cargo-insta, typos
+cargo install --locked just   # task runner; `just setup` then installs the pinned version
+just setup                    # pinned toolchain, MSRV toolchain, just, cargo-deny, cargo-insta, typos
 just install-hooks                   # optional: fmt and spell check before each commit
 ```
 
@@ -55,5 +55,5 @@ If you add a new dependency or bump one by hand, follow the same rule. Pick a re
 ### The update cycle
 
 - **Weekly (Monday):** Dependabot opens grouped PRs: one for crate patches, one for crate minors, one for actions, and one PR per major bump or toolchain release. Read the changelogs, let CI run, then merge. A major or toolchain bump may also need code changes, or an MSRV note if a crate raises its own `rust-version`.
-- **Monthly (first Monday):** check the dev tools in the `justfile` for releases older than 14 days and bump them there. If `just` itself changes, also bump it in `.github/actions/setup/action.yml` and the setup line above. Then run `just setup && just ci`. Also run `cargo update --dry-run` to spot anything Dependabot has missed.
+- **Monthly (first Monday):** check the dev tools in the `justfile` for releases older than 14 days and bump them there. If `just` itself changes, also bump it in `.github/actions/setup/action.yml`; CI fails if they differ. Then run `just setup && just ci`. Also run `cargo update --dry-run` to spot anything Dependabot has missed.
 - **Any time:** a security PR or a failing audit takes priority. Merge the fix once CI passes.

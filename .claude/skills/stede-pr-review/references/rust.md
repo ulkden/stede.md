@@ -7,7 +7,7 @@ removed web/database/lock-free sections, and added the terminal-app notes.
 
 # Rust checklist
 
-Workspace facts: edition **2024**, `rust-version` **1.85**, `unsafe_code = "forbid"`, clippy `all` warns and CI denies warnings. Don't flag anything clippy or the compiler already reports.
+Workspace facts: read `edition` and `rust-version` from the root `Cargo.toml`; don't assume them. At the time of writing they are 2024 and 1.85, and the edition notes below assume 2024. `unsafe_code = "forbid"`; clippy `all` warns and CI denies warnings. Don't flag anything clippy or the compiler already reports.
 
 ## Ownership and borrowing
 

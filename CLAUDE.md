@@ -44,7 +44,7 @@ Planned crates and their reasons are in the "Recommended stack" table in `docs/a
 - Screens are tested with `insta` snapshots on ratatui's `TestBackend`.
 - Config is TOML, merged in layers: defaults, user file, `.stede/config.toml`, `.stede/local.toml`, profile, session `:set`. Unknown keys and errors report file, line and key.
 - Wide characters count by display width (CJK, emoji) wherever text is aligned.
-- Dependencies are pinned: `Cargo.lock` with `--locked`, `rust-toolchain.toml`, and actions by commit SHA. New releases wait 14 days; patch and security fixes may come in at once. Add crates to `[workspace.dependencies]`. See "Dependencies" in `CONTRIBUTING.md`.
+- Dependencies are pinned: `Cargo.lock` with `--locked`, `rust-toolchain.toml`, and actions by commit SHA. New releases wait 14 days; patch and security fixes may come in at once, except GitHub Actions, where every release waits 14 days (security updates still skip the wait). Add crates to `[workspace.dependencies]`. See "Dependencies" in `CONTRIBUTING.md`.
 
 ## Commands
 
