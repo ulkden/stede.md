@@ -33,7 +33,7 @@ setup:
     rustup toolchain install {{ msrv }} --profile minimal
     cargo install --locked just@{{ just_version }} cargo-deny@{{ deny_version }} cargo-insta@{{ insta_version }} typos-cli@{{ typos_version }}
 
-# Run every check CI runs
+# Run every check CI runs, except dep-age (needs network and Python 3.11+)
 ci: fmt-check lint test doc layers deny typos msrv
 
 # Format all code
@@ -63,6 +63,10 @@ deny:
 # Advisories only (what the daily audit runs)
 audit:
     cargo deny --locked check advisories
+
+# Check that dependency versions new since origin/main are 14+ days old (needs network)
+dep-age *args:
+    python3 scripts/dependency-age.py {{ args }}
 
 # Spell check code and docs
 typos:

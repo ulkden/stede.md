@@ -44,7 +44,7 @@ Planned crates and their reasons are in the "Recommended stack" table in `docs/a
 - Screens are tested with `insta` snapshots on ratatui's `TestBackend`.
 - Config is TOML, merged in layers: defaults, user file, `.stede/config.toml`, `.stede/local.toml`, profile, session `:set`. Unknown keys and errors report file, line and key.
 - Wide characters count by display width (CJK, emoji) wherever text is aligned.
-- Dependencies are pinned: `Cargo.lock` with `--locked`, `rust-toolchain.toml`, and actions by commit SHA. New releases wait 14 days; patch and security fixes may come in at once, except GitHub Actions, where every release waits 14 days (security updates still skip the wait). Add crates to `[workspace.dependencies]`. See "Dependencies" in `CONTRIBUTING.md`.
+- Dependencies are pinned: `Cargo.lock` with `--locked`, `rust-toolchain.toml`, and actions by commit SHA. New releases wait 14 days; patch and security fixes may come in at once, except GitHub Actions, where every release waits 14 days (security updates still skip the wait). CI's `Dependency age` check (`scripts/dependency-age.py`) enforces this on every PR. Add crates to `[workspace.dependencies]`. See "Dependencies" in `CONTRIBUTING.md`.
 
 ## Commands
 
@@ -53,6 +53,7 @@ Tasks live in the `justfile`, and CI runs the same recipes. Setup and the full l
 ```sh
 just setup                  # pinned toolchain and dev tools
 just ci                     # everything CI runs: fmt, clippy, tests, docs, deny, layers, typos, MSRV
+just dep-age                # 14-day rule on new dependency versions (network, Python 3.11+)
 just fmt                    # cargo fmt --all
 just layers                 # headless crates must not depend on UI crates
 cargo run -p stede-tui      # runs `stede`

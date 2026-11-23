@@ -1,0 +1,56 @@
+# The 14-day rule (CONTRIBUTING.md): every crate, toolchain, action or dev-tool
+# version a PR introduces must be at least 14 days old, unless it is a patch bump.
+# Dependabot's cooldown covers most of this, but not the toolchain (no publish
+# date in its registry) and not hand edits, so this check enforces it everywhere.
+#
+# For a security fix that isn't a patch bump, add the `dependency-age-exempt`
+# label and say why in the PR. That waives "too new" only; loose pins and
+# versions whose age can't be confirmed still fail.
+#
+# A PR that is too new fails until its eligible date. Re-run this job after that
+# date, or let Dependabot's next rebase re-run it.
+#
+# The rule is enforced on the PR itself. In a merge queue the job only reports
+# success, so a required check never hangs: queue events carry no PR labels, and
+# the queued commit also holds other PRs' changes.
+name: Dependency age
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  age:
+    name: New dependency versions are 14+ days old
+    runs-on: ubuntu-latest
+    steps:
+      - name: Merge queue
+        if: github.event_name == 'merge_group'
+        run: echo "Dependency age is checked on each PR before it is queued."
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: github.event_name != 'merge_group'
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Check dependency age
+        if: github.event_name != 'merge_group'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          EXEMPT: ${{ contains(github.event.pull_request.labels.*.name, 'dependency-age-exempt') }}
+        run: |
+          args=()
+          # The PR checkout is GitHub's merge commit; its first parent is the base
+          # it was merged onto. (The event's base.sha goes stale when main moves.)
+          if [ "$EVENT" = "pull_request" ]; then args+=(--base HEAD^1); fi
+          if [ "$EXEMPT" = "true" ]; then args+=(--exempt); fi
+          python3 scripts/dependency-age.py "${args[@]}"

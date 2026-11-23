@@ -95,7 +95,7 @@ Dependabot PRs aren't opened by Claude, so the two-round loop doesn't apply. In 
 - the changelogs between the old and new versions
 - breaking changes and MSRV bumps
 - licenses (`just deny`)
-- whether the 14-day rule holds (see `CONTRIBUTING.md`)
+- whether the 14-day rule holds: the `Dependency age` check enforces it. If it fails only because a release is too new, leave the PR open with a comment naming the eligible date, then re-run the check on or after that date
 
 Merge when CI is green. Major bumps and toolchain bumps get a `high` round.
 
