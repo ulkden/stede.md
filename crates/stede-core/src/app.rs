@@ -228,6 +228,8 @@ impl App {
                     return Err(format!("{} is the only open pane", pane.title()));
                 }
             }
+            // The probe front end runs this one; it is bound only in probe mode.
+            "probe.quit" => return Err("probe.quit only works in stede --probe".into()),
             other => return Err(format!("{other} has no handler yet")),
         }
         Ok(())
@@ -465,7 +467,13 @@ mod tests {
             panic!("table expected");
         };
         let rows: Vec<&Row> = sections.iter().flat_map(|s| &s.rows).collect();
-        assert_eq!(rows.len(), app.keymap().bindings().count());
+        assert_eq!(
+            rows.len(),
+            app.keymap()
+                .bindings()
+                .filter(|b| b.mode == Mode::Normal)
+                .count()
+        );
         assert!(
             rows.iter()
                 .all(|r| r.cells.len() == 3 && !r.cells[2].is_empty())

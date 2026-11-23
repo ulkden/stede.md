@@ -9,6 +9,8 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
+use crate::keymap::Mode;
+
 /// An action to run: a registered name plus optional arguments.
 ///
 /// Written as text it is the name followed by space-separated arguments, as in
@@ -68,6 +70,8 @@ pub struct ActionSpec {
     pub name: String,
     pub description: String,
     pub source: Source,
+    /// The modes this action can run in, and so be bound in.
+    pub modes: &'static [Mode],
 }
 
 /// Why an action could not be registered.
@@ -114,20 +118,31 @@ impl Registry {
     /// A registry with every built-in action.
     pub fn with_builtins() -> Self {
         let mut registry = Self::new();
-        for (name, description) in BUILTINS {
+        for &(name, description, modes) in BUILTINS {
             registry
-                .register(name, description, Source::Builtin)
+                .register_in(name, description, Source::Builtin, modes)
                 .expect("built-in actions are valid and unique");
         }
         registry
     }
 
-    /// Adds an action.
+    /// Adds an action that runs in the editor's modes ([`Mode::EDITOR`]).
     pub fn register(
         &mut self,
         name: &str,
         description: &str,
         source: Source,
+    ) -> Result<(), RegisterError> {
+        self.register_in(name, description, source, &Mode::EDITOR)
+    }
+
+    /// Adds an action that runs only in `modes`.
+    pub fn register_in(
+        &mut self,
+        name: &str,
+        description: &str,
+        source: Source,
+        modes: &'static [Mode],
     ) -> Result<(), RegisterError> {
         if !valid_name(name) {
             return Err(RegisterError::BadName(name.to_owned()));
@@ -146,6 +161,7 @@ impl Registry {
                 name: name.to_owned(),
                 description: description.to_owned(),
                 source,
+                modes,
             },
         );
         Ok(())
@@ -184,31 +200,47 @@ fn valid_name(name: &str) -> bool {
         })
 }
 
-/// Built-in actions: name and one-line description.
+/// Built-in actions: name, one-line description, and the modes they run in.
 ///
-/// An action is listed here only once the core can run it, so the cheat sheet
-/// never offers a key that does nothing.
-const BUILTINS: &[(&str, &str)] = &[
-    ("app.quit", "Quit STEDE.md"),
-    ("help.keys", "Open the key cheat sheet"),
-    ("modal.close", "Close the top modal"),
-    ("modal.close_all", "Close every open modal"),
-    ("modal.reopen_last", "Reopen the last output modal"),
-    ("modal.scroll_down", "Scroll the top modal down"),
-    ("modal.scroll_up", "Scroll the top modal up"),
+/// An action is listed here only once something can run it (the core, or a
+/// front end for its own screens such as `probe.*`), so the cheat sheet never
+/// offers a key that does nothing.
+const EDITOR: &[Mode] = &Mode::EDITOR;
+const PROBE: &[Mode] = &[Mode::Probe];
+
+const BUILTINS: &[(&str, &str, &[Mode])] = &[
+    ("app.quit", "Quit STEDE.md", EDITOR),
+    ("help.keys", "Open the key cheat sheet", EDITOR),
+    ("modal.close", "Close the top modal", EDITOR),
+    ("modal.close_all", "Close every open modal", EDITOR),
+    ("modal.reopen_last", "Reopen the last output modal", EDITOR),
+    ("modal.scroll_down", "Scroll the top modal down", EDITOR),
+    ("modal.scroll_up", "Scroll the top modal up", EDITOR),
     (
         "pane.focus_left",
         "Move focus to the pane on the left, opening it if folded",
+        EDITOR,
     ),
     (
         "pane.focus_right",
         "Move focus to the pane on the right, opening it if folded",
+        EDITOR,
     ),
     (
         "pane.focus_one",
         "Fold every pane but this one; again to restore the layout",
+        EDITOR,
     ),
-    ("pane.toggle", "Fold or open a pane: raw, rendered or tree"),
+    (
+        "pane.toggle",
+        "Fold or open a pane: raw, rendered or tree",
+        EDITOR,
+    ),
+    (
+        "probe.quit",
+        "Leave the terminal probe (stede --probe)",
+        PROBE,
+    ),
 ];
 
 #[cfg(test)]

@@ -16,19 +16,29 @@ use crate::key::{Key, KeyCode, KeyParseError, format_keys, parse_keys};
 use crate::layout::PaneId;
 use crate::modal::ModalKind;
 
-/// Editing modes. Phase 1 (the reader) uses Normal only.
+/// Modes: each has its own bindings. Phase 1 (the reader) edits in Normal
+/// only; Probe is the `stede --probe` terminal check.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Mode {
     Normal,
+    /// `stede --probe`: every key is echoed, and these bindings still apply.
+    Probe,
 }
 
 impl Mode {
-    pub const ALL: [Mode; 1] = [Mode::Normal];
+    /// Every mode, including Probe, which isn't an editor mode: code that
+    /// lists the editor's modes (cheat sheets, the status line) should use
+    /// [`Mode::EDITOR`].
+    pub const ALL: [Mode; 2] = [Mode::Normal, Mode::Probe];
+
+    /// The modes the editor itself runs in.
+    pub const EDITOR: [Mode; 1] = [Mode::Normal];
 
     /// The name used in config tables (`[keys.normal]`) and the status line.
     pub fn name(self) -> &'static str {
         match self {
             Mode::Normal => "normal",
+            Mode::Probe => "probe",
         }
     }
 }
@@ -95,6 +105,19 @@ pub enum BindError {
     UnknownAction(String),
     /// Normal-mode keys can't start with `1`-`9`: those type a count.
     CountPrefix(String),
+    /// The action doesn't run in this mode (its registry entry says where it does).
+    WrongMode {
+        keys: String,
+        action: String,
+        mode: Mode,
+        runs_in: Vec<Mode>,
+    },
+    /// Probe mode has no panes or modals: its bindings are global only.
+    WrongScope {
+        keys: String,
+        scope: Scope,
+        mode: Mode,
+    },
 }
 
 impl fmt::Display for BindError {
@@ -103,6 +126,25 @@ impl fmt::Display for BindError {
             Self::Keys(keys, e) => write!(f, "bad keys {keys:?}: {e}"),
             Self::EmptyAction(keys) => write!(f, "keys {keys:?} are bound to an empty action"),
             Self::UnknownAction(name) => write!(f, "unknown action {name:?}"),
+            Self::WrongMode {
+                keys,
+                action,
+                mode,
+                runs_in,
+            } => {
+                let modes: Vec<&str> = runs_in.iter().map(|m| m.name()).collect();
+                write!(
+                    f,
+                    "keys {keys:?}: {action:?} doesn't run in {} mode (it runs in: {})",
+                    mode.name(),
+                    modes.join(", ")
+                )
+            }
+            Self::WrongScope { keys, scope, mode } => write!(
+                f,
+                "keys {keys:?}: {} mode bindings can't be scoped to {scope}",
+                mode.name()
+            ),
             Self::CountPrefix(keys) => write!(
                 f,
                 "keys {keys:?} start with a digit, which types a count in Normal mode"
@@ -161,8 +203,23 @@ impl Keymap {
             parse_keys(keys, Some(self.leader)).map_err(|e| BindError::Keys(keys.to_owned(), e))?;
         let action =
             Action::parse(action).ok_or_else(|| BindError::EmptyAction(keys.to_owned()))?;
-        if !registry.contains(&action.name) {
+        let Some(spec) = registry.get(&action.name) else {
             return Err(BindError::UnknownAction(action.name));
+        };
+        if !spec.modes.contains(&mode) {
+            return Err(BindError::WrongMode {
+                keys: keys.to_owned(),
+                runs_in: spec.modes.to_vec(),
+                action: action.name,
+                mode,
+            });
+        }
+        if mode == Mode::Probe && scope != Scope::Global {
+            return Err(BindError::WrongScope {
+                keys: keys.to_owned(),
+                scope,
+                mode,
+            });
         }
         // A leading 1-9 always starts a count in Normal mode, so such a
         // binding could never run.
@@ -338,7 +395,7 @@ impl Resolver {
     }
 }
 
-use Mode::Normal;
+use Mode::{Normal, Probe};
 use Scope::{Global, Modal, OutputModal};
 
 /// The built-in bindings: mode, scope, keys, action.
@@ -360,6 +417,7 @@ const DEFAULT_BINDINGS: &[(Mode, Scope, &str, &str)] = &[
     (Normal, Global, "<leader>o", "modal.reopen_last"),
     (Normal, Modal, "<Esc>", "modal.close"),
     (Normal, Modal, "<C-c>", "modal.close_all"),
+    (Probe, Global, "qq", "probe.quit"),
     (Normal, OutputModal, "j", "modal.scroll_down"),
     (Normal, OutputModal, "<Down>", "modal.scroll_down"),
     (Normal, OutputModal, "k", "modal.scroll_up"),
@@ -639,6 +697,48 @@ mod tests {
             res.feed(&k, input, Key::plain(KeyCode::Esc)),
             run("modal.close", &[], None)
         );
+    }
+
+    #[test]
+    fn actions_bind_only_in_the_modes_they_run_in() {
+        let mut r = Registry::with_builtins();
+        let mut k = Keymap::new(Key::char(' '));
+        assert!(matches!(
+            k.bind(Mode::Normal, Scope::Global, "Q", "probe.quit", &r),
+            Err(BindError::WrongMode {
+                mode: Mode::Normal,
+                ..
+            })
+        ));
+        let err = k
+            .bind(Mode::Probe, Scope::Global, "x", "app.quit", &r)
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "keys \"x\": \"app.quit\" doesn't run in probe mode (it runs in: normal)"
+        );
+        assert!(
+            k.bind(Mode::Probe, Scope::Global, "<C-q>", "probe.quit", &r)
+                .is_ok()
+        );
+        // A user command named probe.* is an editor command like any other:
+        // modes come from the registry, not the name.
+        r.register("probe.colors", "Show colors", crate::action::Source::User)
+            .unwrap();
+        assert!(
+            k.bind(Mode::Normal, Scope::Global, "gc", "probe.colors", &r)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn probe_bindings_are_global_only() {
+        let r = Registry::with_builtins();
+        let mut k = Keymap::new(Key::char(' '));
+        assert!(matches!(
+            k.bind(Mode::Probe, Scope::Pane(PaneId::Raw), "q", "probe.quit", &r),
+            Err(BindError::WrongScope { .. })
+        ));
     }
 
     #[test]
