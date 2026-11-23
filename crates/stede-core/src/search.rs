@@ -12,6 +12,10 @@ pub const MAX_PATTERN: usize = 1024;
 /// typing; the count then shows as "at least".
 pub const MAX_MATCHES: usize = 100_000;
 
+/// Bytes the live preview (each key typed) scans at most, from the view
+/// out; Enter scans the rest.
+pub const PREVIEW_BYTES: usize = 4 << 20;
+
 /// How a pattern was compiled.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Compiled {
@@ -49,6 +53,8 @@ pub struct Search {
     matches: Vec<Match>,
     /// Whether matches stopped at [`MAX_MATCHES`].
     pub capped: bool,
+    /// Whether only part of the document was scanned (a preview).
+    pub partial: bool,
     current: Option<usize>,
 }
 
@@ -117,25 +123,54 @@ impl Search {
             compiled,
             matches: Vec::new(),
             capped: false,
+            partial: false,
             current: None,
         };
         search.rescan(lines);
         search
     }
 
-    /// Finds the matches again (the document changed).
+    /// A search for the live preview: scans `(index, line)` pairs in the
+    /// order given (the view's line first) until [`PREVIEW_BYTES`].
+    pub fn preview<'a>(
+        pattern: &str,
+        direction: Direction,
+        lines: impl Iterator<Item = (usize, &'a str)>,
+    ) -> Self {
+        let mut search = Self::new(pattern, direction, std::iter::empty());
+        search.scan(lines, PREVIEW_BYTES);
+        search
+    }
+
+    /// Finds the matches again (the document changed, or a preview is
+    /// confirmed).
     pub fn rescan<'a>(&mut self, lines: impl Iterator<Item = &'a str>) {
+        self.scan(lines.enumerate(), usize::MAX);
+    }
+
+    fn scan<'a>(&mut self, lines: impl Iterator<Item = (usize, &'a str)>, budget: usize) {
         self.matches.clear();
         self.current = None;
         self.capped = false;
+        self.partial = false;
         if self.pattern.is_empty() || self.compiled == Compiled::TooBig {
             return;
         }
-        for (i, line) in lines.enumerate() {
+        let mut scanned = 0usize;
+        let mut sorted = true;
+        let mut last = 0;
+        for (i, line) in lines {
+            if scanned >= budget {
+                self.partial = true;
+                break;
+            }
+            scanned = scanned.saturating_add(line.len() + 1);
+            sorted &= i >= last;
+            last = i;
             for m in self.regex.find_iter(line) {
                 if self.matches.len() == MAX_MATCHES {
                     self.capped = true;
-                    return;
+                    break;
                 }
                 // An empty match (`a*`) would light nothing; skip it.
                 if m.start() < m.end() {
@@ -146,7 +181,20 @@ impl Search {
                     });
                 }
             }
+            if self.capped {
+                break;
+            }
         }
+        // Lines given out of order (a preview from the view): steps need them
+        // in document order.
+        if !sorted {
+            self.matches.sort_unstable_by_key(|m| (m.line, m.start));
+        }
+    }
+
+    /// Whether the count is only a lower bound (capped, or a preview).
+    pub fn at_least(&self) -> bool {
+        self.capped || self.partial
     }
 
     pub fn regex(&self) -> &Regex {
@@ -300,6 +348,22 @@ mod tests {
         let s = Search::new("e", Direction::Forward, [text.as_str()].into_iter());
         assert_eq!(s.matches().len(), MAX_MATCHES);
         assert!(s.capped);
+    }
+
+    #[test]
+    fn a_preview_scans_from_the_view_within_its_budget() {
+        let lines: Vec<String> = (0..100)
+            .map(|i| format!("{i} {}", "x".repeat(PREVIEW_BYTES / 50)))
+            .collect();
+        let s = Search::preview(
+            "7",
+            Direction::Forward,
+            (60..100).chain(0..60).map(|i| (i, lines[i].as_str())),
+        );
+        assert!(s.partial);
+        let found: Vec<usize> = s.matches().iter().map(|m| m.line).collect();
+        assert!(found.windows(2).all(|w| w[0] <= w[1]), "kept in order");
+        assert!(found.contains(&70) && !found.contains(&17), "{found:?}");
     }
 
     #[test]

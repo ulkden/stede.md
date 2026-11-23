@@ -280,8 +280,54 @@ fn draw_pane(
     }
 }
 
+/// Context kept around the drawn bytes when matching, so `^`, `\b` and
+/// matches that start just off screen still read their neighbors.
+const MATCH_CONTEXT: usize = 1024;
+
+/// The byte largest at or below `i` that starts a character.
+fn char_floor(text: &str, mut i: usize) -> usize {
+    i = i.min(text.len());
+    while !text.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+/// Matches of `regex` in `line` touching bytes `from..to` (what's drawn),
+/// sorted. Only a window around them is searched, so a huge line costs
+/// what's on screen, not the whole line.
+fn drawn_matches(regex: &regex::Regex, line: &str, from: usize, to: usize) -> Vec<(usize, usize)> {
+    let start = char_floor(line, from.saturating_sub(MATCH_CONTEXT));
+    let end = char_floor(line, to.saturating_add(MATCH_CONTEXT));
+    // `find_at` keeps what's before `start` as context for `^` and `\b`.
+    let hay = &line[..end];
+    let mut out = Vec::new();
+    let mut at = start;
+    while at <= hay.len() {
+        let Some(m) = regex.find_at(hay, at) else {
+            break;
+        };
+        if m.start() >= to {
+            break;
+        }
+        if m.start() < m.end() && m.end() > from {
+            out.push((m.start(), m.end()));
+        }
+        at = if m.end() > m.start() {
+            m.end()
+        } else {
+            // Step past an empty match by a whole character.
+            hay[m.end()..]
+                .chars()
+                .next()
+                .map_or(hay.len() + 1, |c| m.end() + c.len_utf8())
+        };
+    }
+    out
+}
+
 /// A raw row split into runs, lit where a character's source byte falls in
-/// a match.
+/// a match. Both are in order, so one cursor walks the matches.
 fn lit_by_offset(
     row: &str,
     offsets: &[usize],
@@ -295,8 +341,12 @@ fn lit_by_offset(
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut run = String::new();
     let mut run_lit = false;
+    let mut next = 0;
     for (c, &at) in row.chars().zip(offsets) {
-        let lit = ranges.iter().any(|&(a, b)| at >= a && at < b);
+        while next < ranges.len() && ranges[next].1 <= at {
+            next += 1;
+        }
+        let lit = ranges.get(next).is_some_and(|&(a, b)| at >= a && at < b);
         if lit != run_lit && !run.is_empty() {
             let s = if run_lit { style.bg(color) } else { style };
             spans.push(Span::styled(std::mem::take(&mut run), s));
@@ -442,20 +492,19 @@ fn draw_raw(
         let style = line_style(*kind, theme);
         // The first line may be scrolled into; only the rows that fit are built.
         let skip = if i == 0 { raw.first_row } else { 0 };
-        // Matches are found in the whole source line (as the core finds
-        // them), then lit where its characters are drawn.
-        let ranges: Vec<(usize, usize)> = search.map_or_else(Vec::new, |s| {
-            s.regex
-                .find_iter(text)
-                .filter(|m| m.start() < m.end())
-                .map(|m| (m.start(), m.end()))
-                .collect()
-        });
         let color = match search {
             Some(s) if s.current_line == Some(*number) => theme.search_current,
             _ => theme.search_match,
         };
         let rows = wrap_rows_mapped(text, text_width, skip, height - lines.len());
+        let ranges = match (search, rows.first(), rows.last()) {
+            (Some(s), Some(first), Some(last)) => {
+                let from = first.1.first().copied().unwrap_or(0);
+                let to = last.1.last().map_or(from, |&b| b + 1);
+                drawn_matches(s.regex, text, from, to)
+            }
+            _ => Vec::new(),
+        };
         for (r, (row, offsets)) in rows.into_iter().enumerate() {
             let mut spans = Vec::with_capacity(2);
             if gutter > 0 {
@@ -554,10 +603,18 @@ fn draw_tree(frame: &mut Frame, area: Rect, tree: &TreeView, focused: bool, them
 fn draw_status(frame: &mut Frame, area: Rect, view: &View, theme: &Theme) {
     // Typing a search: the pattern takes the line, with a cursor after it.
     if let Some(prompt) = &view.status.prompt {
-        let line = Line::from(vec![
+        let mut spans = vec![
             Span::raw(prompt.clone()),
             Span::styled(" ", Style::new().add_modifier(Modifier::REVERSED)),
-        ]);
+        ];
+        // A message from typing (the pattern's length limit) shows after it.
+        if let Some(message) = &view.status.message {
+            spans.push(Span::styled(
+                format!("  {message}"),
+                Style::new().fg(theme.dim),
+            ));
+        }
+        let line = Line::from(spans);
         frame.render_widget(Paragraph::new(line), area);
         return;
     }
@@ -1084,6 +1141,27 @@ mod tests {
     }
 
     #[test]
+    fn a_match_at_the_end_shows_in_the_rendered_pane() {
+        let mut app = App::new(AppOptions {
+            file: Some("/n/a.md".into()),
+            ..AppOptions::default()
+        });
+        let text = format!(
+            "{}| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | target |\n",
+            (1..=30).map(|i| format!("p{i}\n\n")).collect::<String>()
+        );
+        open_doc(&mut app, &text);
+        render(&mut app, 80, 10);
+        press(&mut app, "/target<CR>");
+        let screen = render(&mut app, 80, 10);
+        let rendered: String = screen
+            .lines()
+            .map(|l| l.chars().skip(32).take(30).collect::<String>())
+            .collect();
+        assert!(rendered.contains("target"), "{screen}");
+    }
+
+    #[test]
     fn raw_matches_light_across_a_wrap() {
         let mut app = App::new(AppOptions {
             file: Some("/n/a.md".into()),
@@ -1102,6 +1180,19 @@ mod tests {
                 .count()
         };
         assert_eq!(lit(1) + lit(2), "hello world".len(), "lit on both rows");
+    }
+
+    #[test]
+    fn drawn_matches_search_only_near_the_screen() {
+        let regex = regex::Regex::new("x").unwrap();
+        let line = "x".repeat(10_000_000);
+        let start = std::time::Instant::now();
+        let found = drawn_matches(&regex, &line, 5_000_000, 5_000_100);
+        assert_eq!(found.len(), 100);
+        assert!(start.elapsed() < std::time::Duration::from_millis(50));
+        // Context before the window still counts for anchors and boundaries.
+        let regex = regex::Regex::new(r"^a|\bb").unwrap();
+        assert_eq!(drawn_matches(&regex, "ab b", 1, 4), vec![(3, 4)]);
     }
 
     #[test]
