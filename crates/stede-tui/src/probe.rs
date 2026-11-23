@@ -9,7 +9,7 @@
 //! like any other key: leaving is the `probe.quit` action (`qq` by default).
 
 use std::io::{self, Write};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{self, Event};
 use ratatui::crossterm::terminal;
@@ -21,7 +21,6 @@ use stede_core::keymap::{Context, Keymap, Mode, Resolver, Scope, Step};
 use stede_core::layout::PaneId;
 
 use crate::input::to_key;
-use stede_core::app::DEFAULT_KEY_TIMEOUT;
 
 /// The samples, each a label and the bytes that draw it.
 fn samples() -> Vec<(&'static str, String)> {
@@ -172,7 +171,7 @@ pub fn run(config: &Config, config_errors: &[ConfigError]) -> io::Result<()> {
     out.flush()?;
 
     let _raw = RawMode::enable()?;
-    echo_keys(&mut out, &mut keys)?;
+    echo_keys(&mut out, &mut keys, config.key_timeout)?;
     writeln!(out)?;
     Ok(())
 }
@@ -196,7 +195,7 @@ impl Drop for RawMode {
 
 /// Echoes each key event raw (what the terminal sent and what STEDE.md
 /// makes of it), then resolves it through the probe keymap.
-fn echo_keys(out: &mut impl Write, keys: &mut ProbeKeys) -> io::Result<()> {
+fn echo_keys(out: &mut impl Write, keys: &mut ProbeKeys, timeout: Duration) -> io::Result<()> {
     let mut deadline: Option<Instant> = None;
     loop {
         let event = match deadline {
@@ -229,7 +228,7 @@ fn echo_keys(out: &mut impl Write, keys: &mut ProbeKeys) -> io::Result<()> {
         };
         match outcome {
             Some(Probe::Quit) => return Ok(()),
-            Some(Probe::Wait) => deadline = Some(Instant::now() + DEFAULT_KEY_TIMEOUT),
+            Some(Probe::Wait) => deadline = Some(Instant::now() + timeout),
             Some(Probe::Continue) => deadline = None,
             None => {}
         }

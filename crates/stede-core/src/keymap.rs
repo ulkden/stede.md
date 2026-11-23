@@ -187,10 +187,14 @@ impl Keymap {
     /// The built-in bindings with another leader key.
     pub fn defaults_with_leader(registry: &Registry, leader: Key) -> Self {
         let mut keymap = Self::new(leader);
+        // A default the leader makes invalid is left out rather than failing
+        // the whole keymap; config rejects such leaders, so this is a backstop.
         for &(mode, scope, keys, action) in DEFAULT_BINDINGS {
-            keymap
-                .bind(mode, scope, keys, action, registry)
-                .expect("default bindings are valid");
+            let bound = keymap.bind(mode, scope, keys, action, registry);
+            debug_assert!(
+                bound.is_ok() || leader != Key::char(' '),
+                "default binding {keys:?} is invalid: {bound:?}"
+            );
         }
         keymap
     }

@@ -153,12 +153,22 @@ fn load_config(path: Option<&std::path::Path>) -> (Config, Vec<ConfigError>) {
         errors.push(origin.error(e));
     }
     // Show paths under the home folder as `~/...`: shorter, and the same as
-    // people write them.
+    // people write them. Every path a problem can name is rewritten, so one
+    // file never shows under two names.
+    let mut config = config;
     if let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) {
-        for e in &mut errors {
-            if let Ok(rest) = e.file.strip_prefix(&home) {
-                e.file = std::path::Path::new("~").join(rest);
+        let tilde = |file: &mut std::path::PathBuf| {
+            if let Ok(rest) = file.strip_prefix(&home) {
+                *file = std::path::Path::new("~").join(rest);
             }
+        };
+        errors.iter_mut().for_each(|e| tilde(&mut e.file));
+        config
+            .bindings
+            .iter_mut()
+            .for_each(|b| tilde(&mut b.origin.file));
+        if let Some((_, origin)) = &mut config.flavor {
+            tilde(&mut origin.file);
         }
     }
     (config, errors)

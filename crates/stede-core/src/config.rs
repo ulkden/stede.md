@@ -149,7 +149,10 @@ const KEY_TABLES: &[(&str, Mode, Scope)] = &[
     ("probe", Mode::Probe, Scope::Global),
 ];
 
-/// The longest key timeout accepted, in milliseconds.
+/// The key timeout range accepted, in milliseconds. Below the minimum no one
+/// can type a second key in time, so `ZZ` and every other sequence (the quit
+/// keys included) could never be pressed.
+pub const MIN_KEY_TIMEOUT_MS: i64 = 100;
 pub const MAX_KEY_TIMEOUT_MS: i64 = 10_000;
 
 impl Config {
@@ -311,10 +314,13 @@ impl LayerParser<'_> {
                     Some(other) => self.error(&origin, format!("unknown preset {other:?}; expected vim")),
                 },
                 "timeout_ms" => match item.as_integer() {
-                    Some(ms) if (0..=MAX_KEY_TIMEOUT_MS).contains(&ms) => {
+                    Some(ms) if (MIN_KEY_TIMEOUT_MS..=MAX_KEY_TIMEOUT_MS).contains(&ms) => {
                         self.config.key_timeout = Duration::from_millis(ms as u64);
                     }
-                    Some(_) => self.error(&origin, format!("must be 0 to {MAX_KEY_TIMEOUT_MS}")),
+                    Some(_) => self.error(
+                        &origin,
+                        format!("must be {MIN_KEY_TIMEOUT_MS} to {MAX_KEY_TIMEOUT_MS}"),
+                    ),
                     None => self.error(
                         &origin,
                         format!("expected an integer, found {}", item.type_name()),
@@ -446,6 +452,10 @@ fn parse_leader(value: &str) -> Result<Key, String> {
         .map_err(|e| e.to_string())?
         .as_slice()
     {
+        // 1-9 type a count in Normal mode, so `<leader>p` could never run.
+        [key] if key.digit().is_some_and(|d| d != 0) => Err(format!(
+            "{value:?}: the leader can't be 1-9, which type a count"
+        )),
         [key] => Ok(*key),
         _ => Err(format!("{value:?}: the leader must be a single key")),
     }
@@ -468,10 +478,13 @@ pub fn user_config_path(env: impl Fn(&str) -> Option<String>) -> Option<PathBuf>
 /// The project's `.stede/` folder: the nearest one at or above `start` (a
 /// folder, or a file's folder).
 pub fn project_dir(start: &Path) -> Option<PathBuf> {
-    let start = if start.is_file() {
-        start.parent()?
+    // Absolute first: the ancestors of a relative path such as `.` or `notes`
+    // stop at the empty path and never reach the folders above it.
+    let absolute = std::fs::canonicalize(start).unwrap_or_else(|_| start.to_path_buf());
+    let start = if absolute.is_file() {
+        absolute.parent()?
     } else {
-        start
+        absolute.as_path()
     };
     start
         .ancestors()
@@ -578,7 +591,7 @@ mod tests {
             vec![
                 "c.toml:2: ui.tree_side: \"top\": expected left or right",
                 "c.toml:3: ui.bogus: unknown key",
-                "c.toml:6: keys.timeout_ms: must be 0 to 10000",
+                "c.toml:6: keys.timeout_ms: must be 100 to 10000",
                 "c.toml:7: keys.leader: \"ab\": the leader must be a single key",
                 "c.toml:9: keys.normal.x: expected a string, found integer",
                 "c.toml:12: theme.name: unknown theme \"neon\"; built in: dark, light",
@@ -590,6 +603,23 @@ mod tests {
         // The bad entries were skipped; defaults stand.
         assert_eq!(c.tree_side, TreeSide::Right);
         assert_eq!(c.theme.name(), "dark");
+    }
+
+    #[test]
+    fn leader_and_timeout_limits() {
+        let (c, errors) =
+            Config::from_layers(&[layer("c.toml", "[keys]\nleader = \"1\"\ntimeout_ms = 0\n")]);
+        assert_eq!(
+            messages(&errors),
+            vec![
+                "c.toml:2: keys.leader: \"1\": the leader can't be 1-9, which type a count",
+                "c.toml:3: keys.timeout_ms: must be 100 to 10000",
+            ]
+        );
+        assert_eq!(c.leader, Key::char(' '));
+        let (c, errors) = Config::from_layers(&[layer("c.toml", "[keys]\nleader = \"0\"\n")]);
+        assert!(errors.is_empty(), "0 doesn't start a count");
+        assert_eq!(c.leader, Key::char('0'));
     }
 
     #[test]
@@ -665,6 +695,21 @@ mod tests {
         assert_eq!(user_config_path(env(&[])), None);
     }
 
+    /// `target` relative to `base`, with `..` as needed (tests only).
+    fn pathdiff(target: &Path, base: &Path) -> PathBuf {
+        let t: Vec<_> = target.components().collect();
+        let b: Vec<_> = base.components().collect();
+        let common = t.iter().zip(&b).take_while(|(x, y)| x == y).count();
+        let mut out = PathBuf::new();
+        for _ in common..b.len() {
+            out.push("..");
+        }
+        for c in &t[common..] {
+            out.push(c);
+        }
+        out
+    }
+
     #[test]
     fn project_dir_walks_up() {
         let root = std::env::temp_dir().join(format!("stede-config-test-{}", std::process::id()));
@@ -672,8 +717,15 @@ mod tests {
         std::fs::create_dir_all(&deep).unwrap();
         std::fs::create_dir_all(root.join(".stede")).unwrap();
         std::fs::write(deep.join("n.md"), "x").unwrap();
+        let root = std::fs::canonicalize(&root).unwrap();
+        let deep = root.join("a/b");
         assert_eq!(project_dir(&deep.join("n.md")), Some(root.join(".stede")));
         assert_eq!(project_dir(&deep), Some(root.join(".stede")));
+        // A relative start (`stede` run from a subfolder) walks up too.
+        let here = std::fs::canonicalize(std::env::current_dir().unwrap()).unwrap();
+        let relative = pathdiff(&deep, &here);
+        assert!(relative.is_relative());
+        assert_eq!(project_dir(&relative), Some(root.join(".stede")));
         let paths = layer_paths(&deep, |_| None);
         assert_eq!(
             paths,

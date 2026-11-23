@@ -157,6 +157,11 @@ impl ModalStack {
         true
     }
 
+    /// Keeps a modal for `reopen_last` without showing it now.
+    pub fn stash(&mut self, modal: Modal) {
+        self.last_output = Some(modal);
+    }
+
     /// Reopens the last output modal that was closed. Returns false if there
     /// is none.
     pub fn reopen_last(&mut self) -> bool {

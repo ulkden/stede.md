@@ -78,18 +78,28 @@ impl App {
         let all: Vec<&crate::config::ConfigError> =
             options.config_errors.iter().chain(&key_errors).collect();
         if !all.is_empty() {
-            let count = all.len();
-            let problems = problem_lines(&all);
-            app.notify(format!(
-                "{count} config problem(s): {} to reopen the list",
-                app.keymap
-                    .keys_for(Mode::Normal, Scope::Global, "modal.reopen_last")
-                    .map(|k| format_keys(&k))
-                    .unwrap_or_else(|| "modal.reopen_last".into())
-            ));
-            app.layout
-                .modals_mut()
-                .open(Modal::output("Config problems", ModalBody::Text(problems)));
+            use crate::config::Severity;
+            let errors = all.iter().filter(|e| e.severity == Severity::Error).count();
+            let notes = all.len() - errors;
+            let reopen = app
+                .keymap
+                .keys_for(Mode::Normal, Scope::Global, "modal.reopen_last")
+                .map(|k| format_keys(&k))
+                .unwrap_or_else(|| "modal.reopen_last".into());
+            let modal = Modal::output("Config problems", ModalBody::Text(problem_lines(&all)));
+            if errors > 0 {
+                // Errors mean config was skipped: show them at once.
+                app.notify(format!(
+                    "{errors} config error(s): {reopen} to reopen the list"
+                ));
+                app.layout.modals_mut().open(modal);
+            } else {
+                // Notes only (settings not built yet): don't get in the way.
+                app.notify(format!(
+                    "{notes} config setting(s) not built yet: {reopen} to see them"
+                ));
+                app.layout.modals_mut().stash(modal);
+            }
         }
         app
     }
@@ -317,7 +327,11 @@ fn problem_lines(problems: &[&crate::config::ConfigError]) -> Vec<String> {
     let mut lines = Vec::new();
     for file in files {
         lines.push(file.display().to_string());
-        for p in problems.iter().filter(|p| p.file == file) {
+        let mut in_file: Vec<_> = problems.iter().filter(|p| p.file == file).collect();
+        // Top to bottom, the order they're fixed in. Stable, so a line's
+        // problems keep the order they were found in.
+        in_file.sort_by_key(|p| p.line);
+        for p in in_file {
             let mut line = String::from("  ");
             if p.severity == Severity::Note {
                 line.push_str("note: ");
@@ -496,10 +510,10 @@ mod tests {
             lines,
             &vec![
                 "c.toml".to_owned(),
-                "  6: ui.bogus: unknown key".to_owned(),
                 "  2: keys.normal.x: unknown action \"no.such\"".to_owned(),
                 "  4: keys.normal.nn: keys \"nn\" aren't bound here, so there's nothing to unbind"
                     .to_owned(),
+                "  6: ui.bogus: unknown key".to_owned(),
             ]
         );
         assert!(
@@ -507,8 +521,46 @@ mod tests {
                 .status
                 .message
                 .unwrap()
-                .starts_with("3 config problem(s)")
+                .starts_with("3 config error(s)")
         );
+    }
+
+    #[test]
+    fn notes_alone_wait_to_be_asked_for() {
+        use crate::config::{Config, Layer};
+        let (config, errors) = Config::from_layers(&[Layer {
+            path: "c.toml".into(),
+            text: "[ui.animation]\nenabled = true\n".into(),
+        }]);
+        let mut app = App::new(AppOptions {
+            config,
+            config_errors: errors,
+            ..AppOptions::default()
+        });
+        assert!(!app.modals().is_open(), "no modal for notes alone");
+        let message = app.view().status.message.unwrap();
+        assert!(
+            message.starts_with("1 config setting(s) not built yet"),
+            "{message}"
+        );
+        press(&mut app, "<leader>o");
+        assert_eq!(app.modals().top().unwrap().title, "Config problems");
+    }
+
+    #[test]
+    fn digit_leader_falls_back_without_crashing() {
+        use crate::config::{Config, Layer};
+        let (config, errors) = Config::from_layers(&[Layer {
+            path: "c.toml".into(),
+            text: "[keys]\nleader = \"1\"\n".into(),
+        }]);
+        assert_eq!(errors.len(), 1);
+        let app = App::new(AppOptions {
+            config,
+            config_errors: errors,
+            ..AppOptions::default()
+        });
+        assert_eq!(app.keymap().leader(), Key::char(' '));
     }
 
     #[test]
