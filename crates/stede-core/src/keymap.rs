@@ -179,6 +179,15 @@ impl Keymap {
         Ok(())
     }
 
+    /// The first keys (in key order) bound to `action` in this mode and scope.
+    pub fn keys_for(&self, mode: Mode, scope: Scope, action: &str) -> Option<Vec<Key>> {
+        self.tables
+            .get(&(mode, scope))?
+            .iter()
+            .find(|(_, a)| a.name == action)
+            .map(|(keys, _)| keys.clone())
+    }
+
     /// Every binding, by mode, then scope, then keys.
     pub fn bindings(&self) -> impl Iterator<Item = Binding> + '_ {
         self.tables.iter().flat_map(|(&(mode, scope), table)| {

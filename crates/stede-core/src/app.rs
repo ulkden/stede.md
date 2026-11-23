@@ -105,6 +105,10 @@ impl App {
     /// scrolling) agree with what is drawn. Call it before each draw.
     pub fn resize(&mut self, width: u16, height: u16) {
         self.screen = (width, height);
+        // A bigger screen shows more lines, so the furthest useful scroll is
+        // smaller: clamp now so the next `k` moves the view.
+        let visible = crate::modal::max_body_rows(self.panes_height());
+        self.layout.modals_mut().clamp_scroll(visible);
     }
 
     /// Shows a message in the status line until the next action.
@@ -258,6 +262,10 @@ impl App {
         View {
             panes,
             modals: self.layout.modals().iter().collect(),
+            close_key: self
+                .keymap
+                .keys_for(self.mode, Scope::Modal, "modal.close")
+                .map(|keys| format_keys(&keys)),
             status: StatusView {
                 mode: self.mode.name(),
                 pending: self.resolver.pending(),
@@ -360,6 +368,28 @@ mod tests {
         assert_eq!(app.view().status.message.as_deref(), Some("hello"));
         press(&mut app, "<leader>e");
         assert_eq!(app.view().status.message, None);
+    }
+
+    #[test]
+    fn growing_the_screen_reclamps_modal_scroll() {
+        let mut app = App::new(AppOptions::default());
+        app.resize(80, 16);
+        press(&mut app, "<F1>");
+        for _ in 0..50 {
+            press(&mut app, "j");
+        }
+        app.resize(80, 24);
+        let before = app.modals().top().unwrap().scroll;
+        press(&mut app, "k");
+        assert_eq!(app.modals().top().unwrap().scroll, before - 1);
+        let lines = app.modals().top().unwrap().line_count();
+        assert_eq!(before, lines - crate::modal::max_body_rows(23));
+    }
+
+    #[test]
+    fn view_names_the_close_key() {
+        let app = App::new(AppOptions::default());
+        assert_eq!(app.view().close_key.as_deref(), Some("<Esc>"));
     }
 
     #[test]

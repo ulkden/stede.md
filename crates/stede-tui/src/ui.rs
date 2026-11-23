@@ -11,7 +11,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
 use stede_core::modal::{self, Modal, ModalBody};
-use stede_core::view::{PaneView, View};
+use stede_core::view::{PaneView, STATUS_ROWS, View};
 
 /// Colors for the shell. Step 4 (config and themes) replaces this with theme
 /// slots; until then it uses the 16 ANSI colors, which every terminal has.
@@ -44,13 +44,17 @@ impl Default for Theme {
 /// (`App::resize` before `App::view`).
 pub fn draw(frame: &mut Frame, view: &View, theme: &Theme) {
     let [panes_area, status_area] =
-        Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(frame.area());
+        Layout::vertical([Constraint::Min(0), Constraint::Length(STATUS_ROWS)]).areas(frame.area());
     for pane in &view.panes {
         draw_pane(frame, panes_area, pane, theme);
     }
     draw_status(frame, status_area, view, theme);
+    let footer = view
+        .close_key
+        .as_deref()
+        .map(|key| format!(" {key} to close "));
     for modal in &view.modals {
-        draw_modal(frame, panes_area, modal, theme);
+        draw_modal(frame, panes_area, modal, footer.as_deref(), theme);
     }
 }
 
@@ -161,14 +165,14 @@ fn modal_lines<'a>(modal: &'a Modal, theme: &Theme) -> Vec<Line<'a>> {
     }
 }
 
-fn draw_modal(frame: &mut Frame, area: Rect, modal: &Modal, theme: &Theme) {
+fn draw_modal(frame: &mut Frame, area: Rect, modal: &Modal, footer: Option<&str>, theme: &Theme) {
     let lines = modal_lines(modal, theme);
     let content_width = lines.iter().map(Line::width).max().unwrap_or(0);
     let title = format!(" {} ", modal.title);
-    let footer = " Esc to close ";
+    let footer = footer.unwrap_or("");
     let want_width = content_width
         .max(Line::raw(title.as_str()).width())
-        .max(footer.len())
+        .max(Line::raw(footer).width())
         .saturating_add(4); // borders and a cell of padding each side
     // The core sizes modals the same way, so its scrolling matches this.
     let (max_width, max_height) = modal::max_size(area.width, area.height);

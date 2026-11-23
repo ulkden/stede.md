@@ -349,9 +349,15 @@ def compatible(current: str, candidate: str) -> bool:
     return a[:3] == b[:3]
 
 
-def eligible_version(name: str, current: str, cutoff: dt.datetime) -> str | None:
+def eligible_version(
+    name: str, current: str, cutoff: dt.datetime, floor: str | None = None
+) -> str | None:
     """The newest release of `name` that is old enough, not yanked, not a
-    pre-release, semver-compatible with `current`, and not newer than it."""
+    pre-release, semver-compatible with `current`, and not newer than it.
+
+    `floor` is the version the base already has. A target is never below it,
+    and it counts as eligible whatever its age: main already took it (as a
+    patch or an exempt security fix), and settling must not undo that."""
     versions = []
     page = f"{name}/versions?per_page=100"
     # Follow every page: an older semver line can sit past the first 100.
@@ -370,7 +376,8 @@ def eligible_version(name: str, current: str, cutoff: dt.datetime) -> str | None
             or parsed[3].startswith("-")
             or not compatible(current, num)
             or version_key(num) > version_key(current)
-            or parse_time(v["created_at"]) > cutoff
+            or (floor is not None and version_key(num) < version_key(floor))
+            or (parse_time(v["created_at"]) > cutoff and num != floor)
         ):
             continue
         if best is None or version_key(num) > version_key(best):
@@ -395,7 +402,8 @@ def settle(base: str, min_days: int, now: dt.datetime, rounds: int = 5) -> int:
             try:
                 if crate_published(change.name, change.new) <= cutoff:
                     continue
-                target = eligible_version(change.name, change.new, cutoff)
+                floor = change.old if change.old and compatible(change.new, change.old) else None
+                target = eligible_version(change.name, change.new, cutoff, floor)
             except Exception as e:  # noqa: BLE001 - report it, keep settling the rest
                 stuck[key] = f"could not look it up: {e}"
                 continue

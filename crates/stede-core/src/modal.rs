@@ -169,6 +169,14 @@ impl ModalStack {
         }
     }
 
+    /// Keeps every modal's scroll, open or remembered, within what shows when
+    /// `visible` body lines fit. Call it when the screen size changes.
+    pub fn clamp_scroll(&mut self, visible: usize) {
+        for modal in self.stack.iter_mut().chain(self.last_output.as_mut()) {
+            modal.scroll_by(0, visible);
+        }
+    }
+
     /// Where the modal with this id sits, counting from the bottom.
     pub fn position(&self, id: &str) -> Option<usize> {
         self.stack.iter().position(|m| m.id == Some(id))
@@ -267,6 +275,24 @@ mod tests {
         assert_eq!(max_size(100, 40), (80, 28));
         assert_eq!(max_body_rows(40), 26);
         assert_eq!(max_body_rows(1), 0);
+    }
+
+    #[test]
+    fn clamp_scroll_covers_open_and_remembered_modals() {
+        let long = || {
+            let mut m = Modal::output("t", ModalBody::Text(vec!["x".into(); 20]));
+            m.scroll = 18;
+            m
+        };
+        let mut s = ModalStack::new();
+        s.open(long());
+        s.close();
+        s.open(long());
+        s.clamp_scroll(10);
+        assert_eq!(s.top().unwrap().scroll, 10);
+        s.close_all();
+        s.reopen_last();
+        assert_eq!(s.top().unwrap().scroll, 10);
     }
 
     #[test]

@@ -41,8 +41,15 @@ enum Command {
 
 fn parse_args(args: &[String]) -> Result<Command, String> {
     let mut path = None;
+    let mut options_done = false;
     for arg in args {
         match arg.as_str() {
+            "--" if !options_done => options_done = true,
+            p if options_done => {
+                if path.replace(PathBuf::from(p)).is_some() {
+                    return Err("only one path can be opened".into());
+                }
+            }
             "-h" | "--help" => return Ok(Command::Help),
             "-V" | "--version" => return Ok(Command::Version),
             "--probe" => return Ok(Command::Probe),
@@ -85,13 +92,18 @@ fn main() -> ExitCode {
 
 fn open(path: Option<PathBuf>) -> io::Result<()> {
     let tree_folded = match &path {
-        Some(p) if !p.exists() => {
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("{}: no such file or folder", p.display()),
-            ));
-        }
-        Some(p) => p.is_file(),
+        // metadata, not exists(): a permission error says so instead of
+        // looking like a missing path.
+        Some(p) => match std::fs::metadata(p) {
+            Ok(meta) => meta.is_file(),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                return Err(io::Error::new(
+                    e.kind(),
+                    format!("{}: no such file or folder", p.display()),
+                ));
+            }
+            Err(e) => return Err(io::Error::new(e.kind(), format!("{}: {e}", p.display()))),
+        },
         None => false,
     };
     let mut app = App::new(AppOptions {
@@ -166,6 +178,15 @@ mod tests {
         assert_eq!(parse_args(&args(&["-h"])), Ok(Command::Help));
         assert_eq!(parse_args(&args(&["-V"])), Ok(Command::Version));
         assert!(parse_args(&args(&["--nope"])).is_err());
+        assert_eq!(
+            parse_args(&args(&["--", "-draft.md"])),
+            Ok(Command::Open(Some("-draft.md".into())))
+        );
+        assert_eq!(
+            parse_args(&args(&["--", "--"])),
+            Ok(Command::Open(Some("--".into())))
+        );
+        assert!(parse_args(&args(&["--", "a", "b"])).is_err());
         assert!(parse_args(&args(&["a", "b"])).is_err());
     }
 }

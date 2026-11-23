@@ -17,6 +17,8 @@ pub struct View<'a> {
     pub panes: Vec<PaneView>,
     /// Open modals, bottom first. Draw them all, top last.
     pub modals: Vec<&'a Modal>,
+    /// The key bound to `modal.close`, for modal footers ("Esc to close").
+    pub close_key: Option<String>,
     pub status: StatusView,
 }
 
