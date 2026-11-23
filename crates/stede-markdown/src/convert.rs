@@ -205,7 +205,8 @@ impl Builder {
             }
             NodeValue::CodeBlock(code) => {
                 let lang = code.info.split_whitespace().next().map(str::to_owned);
-                let text = code.literal.strip_suffix('\n').unwrap_or(&code.literal);
+                let literal = lf(&code.literal);
+                let text = literal.strip_suffix('\n').unwrap_or(&literal);
                 self.push(
                     BlockKind::Code {
                         lang,
@@ -215,12 +216,13 @@ impl Builder {
                 );
             }
             NodeValue::HtmlBlock(html) => {
-                let text = html.literal.strip_suffix('\n').unwrap_or(&html.literal);
+                let literal = lf(&html.literal);
+                let text = literal.strip_suffix('\n').unwrap_or(&literal);
                 self.push(BlockKind::Html(text.to_owned()), range);
             }
             NodeValue::ThematicBreak => self.push(BlockKind::Rule, range),
             NodeValue::FrontMatter(text) => {
-                self.push(BlockKind::FrontMatter(strip_fences(text)), range);
+                self.push(BlockKind::FrontMatter(strip_fences(&lf(text))), range);
             }
             NodeValue::Table(table) => {
                 let align = table.alignments.iter().map(|&a| align(a)).collect();
@@ -277,12 +279,9 @@ fn strip_fences(text: &str) -> String {
     while lines.last().is_some_and(|l| l.trim().is_empty()) {
         lines.pop();
     }
+    // comrak 0.59 opens and closes front matter with the same `---` line.
     let body = match lines.as_slice() {
-        [first, middle @ .., last]
-            if first.trim() == "---" && matches!(last.trim(), "---" | "...") =>
-        {
-            middle
-        }
+        [first, middle @ .., last] if first.trim() == "---" && last.trim() == "---" => middle,
         [first, rest @ ..] if first.trim() == "---" => rest,
         all => all,
     };
@@ -295,12 +294,47 @@ struct Inherited {
     style: SpanStyle,
     link: Option<String>,
     image: Option<String>,
+    /// Which link, image or footnote reference the text belongs to (0 for
+    /// none). Spans only merge within one: `[a](x)[b](x)` stays two links.
+    group: usize,
+}
+
+/// Spans under construction, with the group each one belongs to.
+#[derive(Default)]
+struct Spans {
+    spans: Vec<Span>,
+    groups: Vec<usize>,
+}
+
+impl Spans {
+    fn emit(&mut self, text: &str, ctx: &Inherited) {
+        if text.is_empty() {
+            return;
+        }
+        if let (Some(last), Some(&group)) = (self.spans.last_mut(), self.groups.last())
+            && group == ctx.group
+            && last.style == ctx.style
+            && last.target == ctx.link
+            && last.image == ctx.image
+        {
+            last.text.push_str(text);
+            return;
+        }
+        self.spans.push(Span {
+            text: text.to_owned(),
+            style: ctx.style,
+            target: ctx.link.clone(),
+            image: ctx.image.clone(),
+        });
+        self.groups.push(ctx.group);
+    }
 }
 
 /// The inline content of a node as styled spans, with neighbours of the same
 /// style merged. Iterative, like the block walk: emphasis nests without limit.
 fn inlines<'a>(node: &'a AstNode<'a>) -> Vec<Span> {
-    let mut out = Vec::new();
+    let mut out = Spans::default();
+    let mut next_group = 0;
     let mut stack: Vec<(&'a AstNode<'a>, Inherited)> = node
         .children()
         .collect::<Vec<_>>()
@@ -312,39 +346,44 @@ fn inlines<'a>(node: &'a AstNode<'a>) -> Vec<Span> {
         let data = node.data();
         match &data.value {
             NodeValue::Text(text) => {
-                emit(&mut out, text, &ctx);
+                out.emit(text, &ctx);
                 continue;
             }
             NodeValue::SoftBreak => {
-                emit(&mut out, " ", &ctx);
+                out.emit(" ", &ctx);
                 continue;
             }
             NodeValue::LineBreak => {
-                emit(&mut out, "\n", &ctx);
+                out.emit("\n", &ctx);
                 continue;
             }
             NodeValue::Code(code) => {
                 ctx.style.code = true;
-                emit(&mut out, &code.literal, &ctx);
+                out.emit(&lf(&code.literal), &ctx);
                 continue;
             }
+            // `\n` in a span means a hard break; a tag split over lines isn't one.
             NodeValue::HtmlInline(html) | NodeValue::Raw(html) => {
                 ctx.style.html = true;
-                emit(&mut out, html, &ctx);
+                out.emit(&lf(html).replace('\n', " "), &ctx);
                 continue;
             }
             NodeValue::Math(math) => {
                 ctx.style.code = true;
-                emit(&mut out, &math.literal, &ctx);
+                out.emit(&lf(&math.literal), &ctx);
                 continue;
             }
+            // The target names the footnote it points to.
             NodeValue::FootnoteReference(r) => {
+                next_group += 1;
+                ctx.group = next_group;
                 ctx.style.footnote_ref = true;
-                emit(&mut out, &format!("[^{}]", r.name), &ctx);
+                ctx.link = Some(r.name.clone());
+                out.emit(&format!("[^{}]", r.name), &ctx);
                 continue;
             }
             NodeValue::EscapedTag(tag) => {
-                emit(&mut out, tag, &ctx);
+                out.emit(tag, &ctx);
                 continue;
             }
             NodeValue::Emph => ctx.style.emph = true,
@@ -352,15 +391,21 @@ fn inlines<'a>(node: &'a AstNode<'a>) -> Vec<Span> {
             NodeValue::Strikethrough => ctx.style.strike = true,
             NodeValue::Underline => ctx.style.underline = true,
             NodeValue::Link(link) => {
+                next_group += 1;
+                ctx.group = next_group;
                 ctx.style.link = true;
                 ctx.link = Some(link.url.clone());
             }
             NodeValue::WikiLink(link) => {
+                next_group += 1;
+                ctx.group = next_group;
                 ctx.style.link = true;
                 ctx.link = Some(link.url.clone());
             }
             // An image inside a link (a README badge) keeps the link's target.
             NodeValue::Image(link) => {
+                next_group += 1;
+                ctx.group = next_group;
                 ctx.style.image = true;
                 ctx.image = Some(link.url.clone());
             }
@@ -369,25 +414,15 @@ fn inlines<'a>(node: &'a AstNode<'a>) -> Vec<Span> {
         let children: Vec<_> = node.children().collect();
         stack.extend(children.into_iter().rev().map(|c| (c, ctx.clone())));
     }
-    out
+    out.spans
 }
 
-fn emit(out: &mut Vec<Span>, text: &str, ctx: &Inherited) {
-    if text.is_empty() {
-        return;
+/// Text with every line ending (`\r\n`, lone `\r`) as `\n`: files saved on
+/// Windows or old Macs must not put carriage returns on screen.
+fn lf(text: &str) -> String {
+    if text.contains('\r') {
+        text.replace("\r\n", "\n").replace('\r', "\n")
+    } else {
+        text.to_owned()
     }
-    if let Some(last) = out.last_mut()
-        && last.style == ctx.style
-        && last.target == ctx.link
-        && last.image == ctx.image
-    {
-        last.text.push_str(text);
-        return;
-    }
-    out.push(Span {
-        text: text.to_owned(),
-        style: ctx.style,
-        target: ctx.link.clone(),
-        image: ctx.image.clone(),
-    });
 }

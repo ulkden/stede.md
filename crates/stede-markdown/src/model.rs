@@ -44,8 +44,9 @@ pub struct SpanStyle {
 pub struct Span {
     pub text: String,
     pub style: SpanStyle,
-    /// Where a link goes. An image inside a link (a README badge) keeps the
-    /// link's target here and its own source in `image`.
+    /// Where a link goes; for a footnote reference, the footnote's name. An
+    /// image inside a link (a README badge) keeps the link's target here and
+    /// its own source in `image`.
     pub target: Option<String>,
     /// The source of an image; the span's text is its alt text.
     pub image: Option<String>,

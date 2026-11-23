@@ -22,6 +22,6 @@ expression: "dump(&render(DOC, Flavor::Gfm))"
 33-35 code Some("rust") "fn main() {}"
 37-37 html "<div>raw</div>"
 39-39 rule
-41-41 p "A note." [fn "[^n]"]
+41-41 p "A note." [fn "[^n]" -> n]
 43-43 [footnote n] p "The footnote."
 45-45 [footnote n cont] p "More of it."

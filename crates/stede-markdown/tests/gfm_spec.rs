@@ -124,9 +124,18 @@ fn collect<'a>(node: &'a AstNode<'a>, out: &mut String) {
         NodeValue::HtmlBlock(h) => out.push_str(&h.literal),
         NodeValue::Math(m) => out.push_str(&m.literal),
         NodeValue::FrontMatter(f) => {
-            for line in f.lines().filter(|l| !matches!(l.trim(), "---" | "...")) {
-                out.push_str(line);
+            // Drop only the opening and closing fences, as the model does.
+            let mut lines: Vec<&str> = f.lines().collect();
+            while lines.last().is_some_and(|l| l.trim().is_empty()) {
+                lines.pop();
             }
+            if lines.first().is_some_and(|l| l.trim() == "---") {
+                lines.remove(0);
+            }
+            if lines.last().is_some_and(|l| l.trim() == "---") {
+                lines.pop();
+            }
+            out.push_str(&lines.concat());
         }
         _ => {}
     }

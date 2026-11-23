@@ -229,6 +229,29 @@ fn footnotes_unreferenced_or_nested_stay_put() {
 }
 
 #[test]
+fn carriage_returns_never_reach_the_model() {
+    for doc in [
+        "```\r\nfoo\r\nbar\r\n```\r\n",
+        "    code\r\n    more\r\n",
+        "<div>\r\nx\r\n</div>\r\n",
+        "```\rfoo\r```\r",
+        "a <span\r\nx> b\r\n",
+        "---\r\na: 1\r\n---\r\n\r\nbody\r\n",
+    ] {
+        let dumped = dump(&render(doc, Flavor::Gfm));
+        assert!(!dumped.contains("\\r"), "{doc:?} => {dumped}");
+    }
+}
+
+#[test]
+fn adjacent_links_and_footnotes_stay_separate() {
+    insta::assert_snapshot!(dump(&render(
+        "x[^1][^2] [a](u)[b](u) <span\nx>\n\n[^1]: one\n[^2]: two\n",
+        Flavor::Gfm
+    )));
+}
+
+#[test]
 fn flavor_names_ignore_case() {
     assert_eq!("GFM".parse::<Flavor>(), Ok(Flavor::Gfm));
     assert_eq!("CommonMark".parse::<Flavor>(), Ok(Flavor::CommonMark));

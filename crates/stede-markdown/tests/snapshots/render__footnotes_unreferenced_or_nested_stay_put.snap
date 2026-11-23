@@ -6,4 +6,4 @@ expression: "dump(&render(\"[^a]: unreferenced\\n\\n> q\\n>\\n> [^x]: in a quote
  3-3  [quote] p "q"
  5-5  [quote > footnote x] p "in a quote"
  7-7  [quote] p "after"
- 9-9  p "ref" [fn "[^x]"]
+ 9-9  p "ref" [fn "[^x]" -> x]
