@@ -209,6 +209,7 @@ const BUILTINS: &[(&str, &str)] = &[
         "Fold every pane but this one; again to restore the layout",
     ),
     ("pane.toggle", "Fold or open a pane: raw, rendered or tree"),
+    ("probe.quit", "Leave the terminal probe (stede --probe)"),
 ];
 
 #[cfg(test)]

@@ -40,7 +40,7 @@ Each step is one PR through the `stede-pr-review` loop. Tick a step when its PR 
 
 ## Phase 0 checks that need real terminals
 
-The phase 0 spike also asked for proof in real terminals, which CI can't give. Run `stede --probe` (`cargo run -p stede-tui -- --probe`) in each terminal. It prints a sample for each check and then echoes keys as STEDE.md sees them; press `q` twice to leave. Tick what works:
+The phase 0 spike also asked for proof in real terminals, which CI can't give. Run `stede --probe` (`cargo run -p stede-tui -- --probe`) in each terminal. It prints a sample for each check and then echoes keys as STEDE.md sees them; `qq` (the `probe.quit` action) leaves. Tick what works:
 
 | Check | Ghostty | Terminal.app | kitty | WezTerm | GNOME Terminal | Windows Terminal (WSL) | tmux |
 | --- | --- | --- | --- | --- | --- | --- | --- |

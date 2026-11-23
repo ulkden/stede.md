@@ -4,13 +4,22 @@
 //! It prints one sample for each check in `docs/phase-1.md` (truecolor, kitty
 //! text sizing, Sixel, kitty graphics), then echoes key presses as STEDE.md
 //! sees them, so you can tick what works in each terminal.
+//!
+//! Every key is echoed raw first, then goes through the keymap in probe mode
+//! like any other key: leaving is the `probe.quit` action (`qq` by default).
 
 use std::io::{self, Write};
+use std::time::Instant;
 
-use ratatui::crossterm::event::{self, Event, KeyCode};
+use ratatui::crossterm::event::{self, Event};
 use ratatui::crossterm::terminal;
+use stede_core::action::Registry;
+use stede_core::key::{Key, format_keys};
+use stede_core::keymap::{Context, Keymap, Mode, Resolver, Scope, Step};
+use stede_core::layout::PaneId;
 
 use crate::input::to_key;
+use stede_core::app::DEFAULT_KEY_TIMEOUT;
 
 /// The samples, each a label and the bytes that draw it.
 fn samples() -> Vec<(&'static str, String)> {
@@ -64,7 +73,72 @@ fn base64(bytes: &[u8]) -> String {
 }
 
 /// Runs the probe. Press `q` twice in a row to leave.
+/// What a key press did in the probe.
+#[derive(Debug, PartialEq, Eq)]
+enum Probe {
+    /// `probe.quit` ran.
+    Quit,
+    /// A sequence is pending: wait `key_timeout` for more.
+    Wait,
+    /// Anything else: keep echoing.
+    Continue,
+}
+
+/// The probe's keys: probe-mode bindings from the keymap, resolved like the
+/// editor's, so the quit key is data and shows up from the keymap.
+struct ProbeKeys {
+    keymap: Keymap,
+    resolver: Resolver,
+}
+
+impl ProbeKeys {
+    const CONTEXT: Context = Context {
+        mode: Mode::Probe,
+        pane: PaneId::Raw,
+        modal: None,
+    };
+
+    fn new() -> Self {
+        Self {
+            keymap: Keymap::defaults(&Registry::with_builtins()),
+            resolver: Resolver::new(),
+        }
+    }
+
+    /// The keys bound to `probe.quit`, in Vim notation.
+    fn quit_keys(&self) -> Option<String> {
+        self.keymap
+            .keys_for(Mode::Probe, Scope::Global, "probe.quit")
+            .map(|keys| format_keys(&keys))
+    }
+
+    fn press(&mut self, key: Key) -> Probe {
+        let step = self.resolver.feed(&self.keymap, Self::CONTEXT, key);
+        Self::outcome(step)
+    }
+
+    fn timeout(&mut self) -> Probe {
+        match self.resolver.timeout(&self.keymap, Self::CONTEXT) {
+            Some(step) => Self::outcome(step),
+            None => Probe::Continue,
+        }
+    }
+
+    fn outcome(step: Step) -> Probe {
+        match step {
+            Step::Run { action, .. } if action.name == "probe.quit" => Probe::Quit,
+            Step::Pending => Probe::Wait,
+            _ => Probe::Continue,
+        }
+    }
+}
+
 pub fn run() -> io::Result<()> {
+    let mut keys = ProbeKeys::new();
+    // With no way out, raw mode would trap the shell: refuse to start.
+    let quit = keys.quit_keys().ok_or_else(|| {
+        io::Error::other("no key is bound to probe.quit, so the probe couldn't be left")
+    })?;
     let mut out = io::stdout();
     writeln!(
         out,
@@ -78,12 +152,12 @@ pub fn run() -> io::Result<()> {
     writeln!(
         out,
         "Keys: press <C-w>, <C-h>, <C-l>, <F1>, <Esc>, <S-Tab>, <A-x> and check each shows as named.\n\
-         Press q twice to quit."
+         Press {quit} to quit."
     )?;
     out.flush()?;
 
     let _raw = RawMode::enable()?;
-    echo_keys(&mut out)?;
+    echo_keys(&mut out, &mut keys)?;
     writeln!(out)?;
     Ok(())
 }
@@ -105,22 +179,38 @@ impl Drop for RawMode {
     }
 }
 
-/// Echoes raw key events. This is the one place keys don't go through the
-/// keymap and action registry, on purpose: the probe shows what the terminal
-/// sends before any binding applies, so its quit key (`q q`) is fixed.
-fn echo_keys(out: &mut impl Write) -> io::Result<()> {
-    let mut last_q = false;
+/// Echoes each key event raw (what the terminal sent and what STEDE.md
+/// makes of it), then resolves it through the probe keymap.
+fn echo_keys(out: &mut impl Write, keys: &mut ProbeKeys) -> io::Result<()> {
+    let mut deadline: Option<Instant> = None;
     loop {
-        if let Event::Key(ev) = event::read()? {
-            let seen = to_key(ev).map_or_else(|| "(ignored)".to_owned(), |k| k.to_string());
-            // Raw mode: move to column 0 ourselves.
-            write!(out, "\r{:<12} {:?} {:?}\r\n", seen, ev.code, ev.modifiers)?;
-            out.flush()?;
-            let is_q = ev.code == KeyCode::Char('q') && ev.modifiers.is_empty();
-            if is_q && last_q {
-                return Ok(());
+        let event = match deadline {
+            Some(at) => {
+                if event::poll(at.saturating_duration_since(Instant::now()))? {
+                    Some(event::read()?)
+                } else {
+                    None
+                }
             }
-            last_q = is_q;
+            None => Some(event::read()?),
+        };
+        let outcome = match event {
+            None => Some(keys.timeout()),
+            Some(Event::Key(ev)) => {
+                let key = to_key(ev);
+                let seen = key.map_or_else(|| "(ignored)".to_owned(), |k| k.to_string());
+                // Raw mode: move to column 0 ourselves.
+                write!(out, "\r{:<12} {:?} {:?}\r\n", seen, ev.code, ev.modifiers)?;
+                out.flush()?;
+                key.map(|k| keys.press(k))
+            }
+            Some(_) => None,
+        };
+        match outcome {
+            Some(Probe::Quit) => return Ok(()),
+            Some(Probe::Wait) => deadline = Some(Instant::now() + DEFAULT_KEY_TIMEOUT),
+            Some(Probe::Continue) => deadline = None,
+            None => {}
         }
     }
 }
@@ -128,6 +218,23 @@ fn echo_keys(out: &mut impl Write) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quit_goes_through_the_probe_keymap() {
+        let mut keys = ProbeKeys::new();
+        assert_eq!(keys.quit_keys().as_deref(), Some("qq"));
+        assert_eq!(keys.press(Key::char('q')), Probe::Wait);
+        assert_eq!(keys.press(Key::char('q')), Probe::Quit);
+        // Anything else in between resets the sequence.
+        assert_eq!(keys.press(Key::char('q')), Probe::Wait);
+        assert_eq!(keys.press(Key::char('x')), Probe::Continue);
+        assert_eq!(keys.press(Key::char('q')), Probe::Wait);
+        // A pause too long drops the pending `q`.
+        assert_eq!(keys.timeout(), Probe::Continue);
+        assert_eq!(keys.press(Key::char('q')), Probe::Wait);
+        // Editor keys do nothing here: only probe-mode bindings apply.
+        assert_eq!(keys.press(Key::ctrl('l')), Probe::Continue);
+    }
 
     #[test]
     fn base64_matches_known_values() {

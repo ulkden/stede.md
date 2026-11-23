@@ -16,19 +16,23 @@ use crate::key::{Key, KeyCode, KeyParseError, format_keys, parse_keys};
 use crate::layout::PaneId;
 use crate::modal::ModalKind;
 
-/// Editing modes. Phase 1 (the reader) uses Normal only.
+/// Modes: each has its own bindings. Phase 1 (the reader) edits in Normal
+/// only; Probe is the `stede --probe` terminal check.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Mode {
     Normal,
+    /// `stede --probe`: every key is echoed, and these bindings still apply.
+    Probe,
 }
 
 impl Mode {
-    pub const ALL: [Mode; 1] = [Mode::Normal];
+    pub const ALL: [Mode; 2] = [Mode::Normal, Mode::Probe];
 
     /// The name used in config tables (`[keys.normal]`) and the status line.
     pub fn name(self) -> &'static str {
         match self {
             Mode::Normal => "normal",
+            Mode::Probe => "probe",
         }
     }
 }
@@ -338,7 +342,7 @@ impl Resolver {
     }
 }
 
-use Mode::Normal;
+use Mode::{Normal, Probe};
 use Scope::{Global, Modal, OutputModal};
 
 /// The built-in bindings: mode, scope, keys, action.
@@ -360,6 +364,7 @@ const DEFAULT_BINDINGS: &[(Mode, Scope, &str, &str)] = &[
     (Normal, Global, "<leader>o", "modal.reopen_last"),
     (Normal, Modal, "<Esc>", "modal.close"),
     (Normal, Modal, "<C-c>", "modal.close_all"),
+    (Probe, Global, "qq", "probe.quit"),
     (Normal, OutputModal, "j", "modal.scroll_down"),
     (Normal, OutputModal, "<Down>", "modal.scroll_down"),
     (Normal, OutputModal, "k", "modal.scroll_up"),
