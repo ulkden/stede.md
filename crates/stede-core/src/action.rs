@@ -132,7 +132,9 @@ impl Registry {
         if !valid_name(name) {
             return Err(RegisterError::BadName(name.to_owned()));
         }
-        if description.trim().is_empty() || description.contains('\n') {
+        let description = description.trim();
+        // One line, and nothing that moves the cursor when drawn (`\r`, tabs).
+        if description.is_empty() || description.chars().any(char::is_control) {
             return Err(RegisterError::BadDescription(name.to_owned()));
         }
         if self.actions.contains_key(name) {
@@ -142,7 +144,7 @@ impl Registry {
             name.to_owned(),
             ActionSpec {
                 name: name.to_owned(),
-                description: description.trim().to_owned(),
+                description: description.to_owned(),
                 source,
             },
         );
@@ -264,5 +266,12 @@ mod tests {
             r.register("a.b", "one\ntwo", Source::User),
             Err(RegisterError::BadDescription(_))
         ));
+        assert!(matches!(
+            r.register("a.b", "one\rtwo", Source::User),
+            Err(RegisterError::BadDescription(_))
+        ));
+        // A trailing newline trims away: the text is still one line.
+        assert!(r.register("a.b", "One line\n", Source::User).is_ok());
+        assert_eq!(r.get("a.b").unwrap().description, "One line");
     }
 }

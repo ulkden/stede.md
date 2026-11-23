@@ -80,7 +80,12 @@ impl Key {
                     KeyCode::Char(c)
                 }
             }
+            // Back-Tab already means Shift+Tab, and Shift+Tab is Back-Tab.
             KeyCode::BackTab => {
+                mods.shift = false;
+                KeyCode::BackTab
+            }
+            KeyCode::Tab if mods.shift => {
                 mods.shift = false;
                 KeyCode::BackTab
             }
@@ -203,8 +208,9 @@ impl std::error::Error for KeyParseError {}
 ///
 /// Plain characters stand for themselves; `<...>` names a special key or adds
 /// modifiers (`<C-w>`, `<A-x>`, `<S-Tab>`, `<F5>`, `<Space>`, `<lt>`).
-/// `<leader>` expands to `leader`. A `<` that doesn't start a valid name is a
-/// literal `<`.
+/// `<leader>` expands to `leader`. Anything shaped like a name (letters,
+/// digits and `-` inside `<...>`) must be a known name, so typos such as
+/// `<Esq>` are errors; any other `<` is a literal `<` (`a<b`, `<>`).
 pub fn parse_keys(s: &str, leader: Option<Key>) -> Result<Vec<Key>, KeyParseError> {
     let chars: Vec<char> = s.chars().collect();
     let mut keys = Vec::new();
@@ -384,6 +390,7 @@ mod tests {
         assert_eq!(Key::new(KeyCode::Char('g'), shift), Key::char('G'));
         assert_eq!(Key::new(KeyCode::BackTab, shift), keys("<S-Tab>")[0]);
         assert_eq!(Key::new(KeyCode::BackTab, shift).to_string(), "<S-Tab>");
+        assert_eq!(Key::new(KeyCode::Tab, shift), keys("<S-Tab>")[0]);
     }
 
     #[test]

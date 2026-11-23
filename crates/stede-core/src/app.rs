@@ -12,11 +12,11 @@ use crate::action::{Action, Registry};
 use crate::key::{Key, format_keys};
 use crate::keymap::{Context, Keymap, Mode, Resolver, Scope, Step};
 use crate::layout::{Layout, LayoutOptions, PaneId};
-use crate::modal::{Modal, ModalBody, ModalKind, ModalStack, Row, Section};
+use crate::modal::{Modal, ModalBody, ModalStack, Row, Section};
 use crate::view::{PaneView, StatusView, View};
 
 /// Identifies the key cheat sheet among open modals, so its hotkey toggles it.
-const CHEAT_SHEET_TITLE: &str = "Keys";
+const CHEAT_SHEET_ID: &str = "help.keys";
 
 /// How long to wait for the next key of an ambiguous sequence (Vim's `timeoutlen`).
 pub const DEFAULT_KEY_TIMEOUT: Duration = Duration::from_millis(1000);
@@ -199,14 +199,11 @@ impl App {
         Ok(())
     }
 
+    /// Opens the cheat sheet, or, if it is open anywhere in the stack, closes
+    /// it along with anything opened on top of it.
     fn toggle_cheat_sheet(&mut self) {
-        if self
-            .layout
-            .modals()
-            .top()
-            .is_some_and(|m| m.kind == ModalKind::Output && m.title == CHEAT_SHEET_TITLE)
-        {
-            self.layout.modals_mut().close();
+        if let Some(index) = self.layout.modals().position(CHEAT_SHEET_ID) {
+            self.layout.modals_mut().close_through(index);
             return;
         }
         let sheet = cheat_sheet(&self.keymap, &self.registry, self.mode);
@@ -268,12 +265,13 @@ pub fn cheat_sheet(keymap: &Keymap, registry: &Registry, mode: Mode) -> Modal {
         }
     }
     Modal::output(
-        CHEAT_SHEET_TITLE,
+        "Keys",
         ModalBody::Table {
             headers: vec!["Keys".into(), "Action".into(), "Description".into()],
             sections,
         },
     )
+    .with_id(CHEAT_SHEET_ID)
 }
 
 fn capitalize(s: &str) -> String {
@@ -351,6 +349,26 @@ mod tests {
         assert!(!app.modals().is_open());
         press(&mut app, "<leader>o");
         assert_eq!(app.modals().top().unwrap().title, "Keys");
+    }
+
+    #[test]
+    fn cheat_sheet_hotkey_closes_it_from_under_another_modal() {
+        let mut app = App::new(AppOptions::default());
+        press(&mut app, "<F1>");
+        app.layout
+            .modals_mut()
+            .open(Modal::output("Other", ModalBody::Text(vec![])));
+        press(&mut app, "<F1>");
+        assert!(
+            !app.modals().is_open(),
+            "closed through the sheet, no second copy"
+        );
+        // Another output that happens to be titled "Keys" isn't mistaken for it.
+        app.layout
+            .modals_mut()
+            .open(Modal::output("Keys", ModalBody::Text(vec![])));
+        press(&mut app, "<F1>");
+        assert_eq!(app.modals().len(), 2);
     }
 
     #[test]

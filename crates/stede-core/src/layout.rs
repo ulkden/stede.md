@@ -337,7 +337,36 @@ impl Layout {
             });
             x += w;
         }
+        self.keep_focus_visible(&mut rects, width);
         rects
+    }
+
+    /// When cells are too scarce for everyone, the focused pane still gets at
+    /// least one, taken from the widest other pane.
+    fn keep_focus_visible(&self, rects: &mut [PaneRect], width: u16) {
+        if width == 0 {
+            return;
+        }
+        let Some(fi) = rects.iter().position(|r| r.id == self.focus) else {
+            return;
+        };
+        if rects[fi].width > 0 {
+            return;
+        }
+        let donor = (0..rects.len())
+            .filter(|&i| i != fi && rects[i].width > 0)
+            .max_by_key(|&i| rects[i].width);
+        if let Some(di) = donor {
+            rects[di].width -= 1;
+            rects[fi].width = 1;
+        } else {
+            rects[fi].width = 1.min(width);
+        }
+        let mut x = 0;
+        for r in rects.iter_mut() {
+            r.x = x;
+            x += r.width;
+        }
     }
 
     fn slot(&self, id: PaneId) -> &Slot {
@@ -559,6 +588,24 @@ mod tests {
             let g = l.geometry(width);
             assert!(g.iter().map(|r| r.width).sum::<u16>() <= width);
             assert!(g.iter().all(|r| r.x <= width));
+        }
+    }
+
+    #[test]
+    fn focused_pane_stays_visible_when_cramped() {
+        let mut l = Layout::default();
+        for width in 1..6 {
+            let g = l.geometry(width);
+            let focus = g.iter().find(|r| r.id == PaneId::Raw).unwrap();
+            assert!(focus.width >= 1, "width {width}");
+            assert!(g.iter().map(|r| r.width).sum::<u16>() <= width);
+        }
+        l.focus_one();
+        let g = l.geometry(2);
+        assert_eq!(g.iter().find(|r| r.id == PaneId::Raw).unwrap().width, 1);
+        // Rects stay contiguous after the reshuffle.
+        for pair in g.windows(2) {
+            assert_eq!(pair[0].x + pair[0].width, pair[1].x);
         }
     }
 

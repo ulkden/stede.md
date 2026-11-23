@@ -186,21 +186,34 @@ impl Keymap {
     }
 
     /// The action bound to exactly `keys` in this context, honoring scope priority.
+    ///
+    /// Shadowing: the highest-priority scope with any binding that equals or
+    /// starts with `keys` owns them. Lower scopes aren't consulted, so a pane
+    /// binding fully overrides global ones that share its prefix.
     fn exact(&self, ctx: Context, keys: &[Key]) -> Option<&Action> {
-        ctx.scopes()
-            .into_iter()
-            .find_map(|scope| self.tables.get(&(ctx.mode, scope))?.get(keys))
+        self.owner(ctx, keys)?.get(keys)
     }
 
-    /// Whether some binding in this context is longer than `keys` and starts with it.
+    /// Whether the scope that owns `keys` has a binding longer than `keys`.
     fn has_longer(&self, ctx: Context, keys: &[Key]) -> bool {
-        ctx.scopes().into_iter().any(|scope| {
-            self.tables.get(&(ctx.mode, scope)).is_some_and(|table| {
-                table
-                    .range(keys.to_vec()..)
-                    .take_while(|(k, _)| k.starts_with(keys))
-                    .any(|(k, _)| k.len() > keys.len())
-            })
+        self.owner(ctx, keys).is_some_and(|table| {
+            table
+                .range(keys.to_vec()..)
+                .take_while(|(k, _)| k.starts_with(keys))
+                .any(|(k, _)| k.len() > keys.len())
+        })
+    }
+
+    /// The table of the first scope, by priority, with a binding equal to or
+    /// starting with `keys`.
+    fn owner(&self, ctx: Context, keys: &[Key]) -> Option<&Table> {
+        ctx.scopes().into_iter().find_map(|scope| {
+            let table = self.tables.get(&(ctx.mode, scope))?;
+            table
+                .range(keys.to_vec()..)
+                .next()
+                .filter(|(k, _)| k.starts_with(keys))
+                .map(|_| table)
         })
     }
 }
@@ -255,7 +268,11 @@ impl Resolver {
     pub fn feed(&mut self, keymap: &Keymap, ctx: Context, key: Key) -> Step {
         if key == Key::plain(KeyCode::Esc) && self.is_pending() {
             self.reset();
-            return Step::Cancelled;
+            // In a modal, Esc is also the close key: one press closes it even
+            // with keys half-typed. Elsewhere it only cancels them.
+            if !ctx.modal {
+                return Step::Cancelled;
+            }
         }
         // Counts: only in Normal mode outside modals, before the first key of a
         // sequence. `0` only continues a count; on its own it can be a motion.
@@ -506,6 +523,52 @@ mod tests {
         assert_eq!(
             res.feed(&k, ctx(), Key::ctrl('l')),
             run("pane.focus_right", &[], None)
+        );
+    }
+
+    #[test]
+    fn pane_bindings_own_their_prefix() {
+        let r = Registry::with_builtins();
+        let mut k = Keymap::defaults(&r);
+        k.bind(
+            Mode::Normal,
+            Scope::Pane(PaneId::Tree),
+            "<C-w>",
+            "help.keys",
+            &r,
+        )
+        .unwrap();
+        let tree = Context {
+            pane: PaneId::Tree,
+            ..ctx()
+        };
+        let mut res = Resolver::new();
+        // Runs at once: the global <C-w>h / <C-w>l don't make it wait.
+        assert_eq!(
+            res.feed(&k, tree, Key::ctrl('w')),
+            run("help.keys", &[], None)
+        );
+        // Other panes still get the global sequences.
+        assert_eq!(
+            feed_str(&mut res, &k, ctx(), "<C-w>l"),
+            vec![Step::Pending, run("pane.focus_right", &[], None)]
+        );
+    }
+
+    #[test]
+    fn esc_closes_a_modal_even_with_keys_pending() {
+        let (_, k) = setup();
+        let modal = Context {
+            modal: true,
+            ..ctx()
+        };
+        let mut res = Resolver::new();
+        // A stray leader press inside the cheat sheet...
+        assert_eq!(res.feed(&k, modal, Key::char(' ')), Step::Pending);
+        // ...doesn't stop one Esc from closing it.
+        assert_eq!(
+            res.feed(&k, modal, Key::plain(KeyCode::Esc)),
+            run("modal.close", &[], None)
         );
     }
 

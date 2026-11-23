@@ -48,6 +48,9 @@ pub enum ModalBody {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Modal {
     pub kind: ModalKind,
+    /// A stable identity for modals the core needs to find again, such as the
+    /// key cheat sheet. Titles are for people and may repeat.
+    pub id: Option<&'static str>,
     pub title: String,
     pub body: ModalBody,
     /// First visible line, for long content.
@@ -58,10 +61,17 @@ impl Modal {
     pub fn output(title: impl Into<String>, body: ModalBody) -> Self {
         Self {
             kind: ModalKind::Output,
+            id: None,
             title: title.into(),
             body,
             scroll: 0,
         }
+    }
+
+    /// Sets the modal's identity.
+    pub fn with_id(mut self, id: &'static str) -> Self {
+        self.id = Some(id);
+        self
     }
 }
 
@@ -116,6 +126,18 @@ impl ModalStack {
                 true
             }
             None => false,
+        }
+    }
+
+    /// Where the modal with this id sits, counting from the bottom.
+    pub fn position(&self, id: &str) -> Option<usize> {
+        self.stack.iter().position(|m| m.id == Some(id))
+    }
+
+    /// Closes modals from the top down to and including the one at `index`.
+    pub fn close_through(&mut self, index: usize) {
+        while self.stack.len() > index {
+            self.close();
         }
     }
 
