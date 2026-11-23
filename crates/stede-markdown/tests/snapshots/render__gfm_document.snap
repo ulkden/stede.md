@@ -4,7 +4,7 @@ expression: "dump(&render(DOC, Flavor::Gfm))"
 ---
  1-4  front-matter "title: Sample\ntags: [a, b]"
  5-5  h1 "Heading " [em "one"]
- 7-9  p "Some " [strong "bold"] ", " [code "code"] ", " [del "gone"] " and a " [link "link" -> https://example.com] ". Next line, then a hard break\nhere. An image: " [img "alt text" -> pic.png] " and " [link "www.example.com" -> http://www.example.com] "."
+ 7-9  p "Some " [strong "bold"] ", " [code "code"] ", " [del "gone"] " and a " [link "link" -> https://example.com] ". Next line, then a hard break\nhere. An image: " [img "alt text" src=pic.png] " and " [link "www.example.com" -> http://www.example.com] "."
 11-11 h2 "Lists"
 13-13 [item -] p "one"
 14-14 [item -] p "two"

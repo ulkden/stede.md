@@ -10,6 +10,6 @@ mod convert;
 mod flavor;
 pub mod model;
 
-pub use convert::{comrak_options, render};
+pub use convert::{MAX_CONTAINERS, comrak_options, line_count, render};
 pub use flavor::Flavor;
 pub use model::RenderModel;

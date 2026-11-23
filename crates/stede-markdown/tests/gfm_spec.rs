@@ -20,7 +20,7 @@ use std::panic;
 use comrak::nodes::{AstNode, NodeValue};
 use comrak::{Arena, markdown_to_html, parse_document};
 use stede_markdown::model::{BlockKind, Span};
-use stede_markdown::{Flavor, comrak_options, render};
+use stede_markdown::{Flavor, comrak_options, line_count, render};
 
 const SPEC: &str = include_str!("spec/gfm-spec.txt");
 
@@ -168,8 +168,10 @@ fn squash(s: &str) -> String {
 
 fn html_for(markdown: &str) -> String {
     let mut options = comrak_options(Flavor::Gfm);
-    // The spec expects raw HTML passed through.
+    // The spec expects raw HTML passed through, and footnotes handled the
+    // standard way (the render model keeps definitions in place instead).
     options.render.r#unsafe = true;
+    options.parse.leave_footnote_definitions = false;
     markdown_to_html(markdown, &options)
 }
 
@@ -183,22 +185,28 @@ fn spec_examples_render() {
     );
     let mut failures = Vec::new();
     for ex in &examples {
-        let line_count = ex.markdown.lines().count().max(1);
+        let line_count = line_count(&ex.markdown);
         let rendered = panic::catch_unwind(|| render(&ex.markdown, Flavor::Gfm));
         let Ok(model) = rendered else {
             failures.push(format!("#{} ({}): render panicked", ex.number, ex.section));
             continue;
         };
-        let mut previous = 0;
+        // Starts and ends both non-decreasing: block_at_line binary-searches ends.
+        let mut previous = (0, 0);
         for block in &model.blocks {
             let r = block.source;
-            if r.start < 1 || r.end < r.start || r.end > line_count || r.start < previous {
+            if r.start < 1
+                || r.end < r.start
+                || r.end > line_count
+                || (r.start, r.end) < previous
+                || r.end < previous.1
+            {
                 failures.push(format!(
-                    "#{} ({}): bad source range {r:?} (lines: {line_count}, previous start {previous})",
+                    "#{} ({}): bad source range {r:?} (lines: {line_count}, previous {previous:?})",
                     ex.number, ex.section
                 ));
             }
-            previous = r.start;
+            previous = (r.start, r.end);
         }
         let (want, got) = (
             squash(&comrak_text(&ex.markdown)),

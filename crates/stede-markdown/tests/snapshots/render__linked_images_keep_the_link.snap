@@ -1,0 +1,5 @@
+---
+source: crates/stede-markdown/tests/render.rs
+expression: "dump(&render(\"[![ci](badge.svg)](https://ci.example) ![plain](p.png)\\n\",\nFlavor::Gfm))"
+---
+ 1-1  p [link+img "ci" -> https://ci.example src=badge.svg] " " [img "plain" src=p.png]

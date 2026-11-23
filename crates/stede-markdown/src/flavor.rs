@@ -33,6 +33,9 @@ impl Flavor {
     /// they drive scroll sync.
     pub(crate) fn options(self) -> Options<'static> {
         let mut options = Options::default();
+        // Keep footnote definitions where they're written, referenced or not:
+        // comrak otherwise drops unreferenced ones and moves the rest to the end.
+        options.parse.leave_footnote_definitions = true;
         if self == Flavor::Gfm {
             let ext = &mut options.extension;
             ext.table = true;
@@ -57,7 +60,7 @@ impl FromStr for Flavor {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
+        match s.to_ascii_lowercase().as_str() {
             "gfm" => Ok(Flavor::Gfm),
             "commonmark" => Ok(Flavor::CommonMark),
             other => Err(format!(

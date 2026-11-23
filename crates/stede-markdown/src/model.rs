@@ -44,8 +44,11 @@ pub struct SpanStyle {
 pub struct Span {
     pub text: String,
     pub style: SpanStyle,
-    /// The target of a link or image.
+    /// Where a link goes. An image inside a link (a README badge) keeps the
+    /// link's target here and its own source in `image`.
     pub target: Option<String>,
+    /// The source of an image; the span's text is its alt text.
+    pub image: Option<String>,
 }
 
 /// One table cell: its inline content.

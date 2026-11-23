@@ -29,11 +29,14 @@ fn dump(model: &RenderModel) -> String {
                         flags.push(name);
                     }
                 }
-                let target = s
+                let mut target = s
                     .target
                     .as_deref()
                     .map(|t| format!(" -> {t}"))
                     .unwrap_or_default();
+                if let Some(src) = &s.image {
+                    target.push_str(&format!(" src={src}"));
+                }
                 if flags.is_empty() {
                     format!("{:?}", s.text)
                 } else {
@@ -176,6 +179,65 @@ fn commonmark_has_no_extensions() {
 #[test]
 fn empty_containers_still_show() {
     insta::assert_snapshot!(dump(&render("- \n\n>\n\n1.\n", Flavor::Gfm)));
+}
+
+#[test]
+fn deep_nesting_does_not_overflow_the_stack() {
+    // Run where a worker would: a thread with a small stack.
+    let doc = ">".repeat(20_000) + " x\n";
+    let emph = "*".repeat(50_000) + "a" + &"*".repeat(50_000) + "\n";
+    std::thread::Builder::new()
+        .stack_size(256 * 1024)
+        .spawn(move || {
+            let m = render(&doc, Flavor::Gfm);
+            assert_eq!(m.blocks.len(), 1);
+            assert_eq!(m.blocks[0].containers.len(), stede_markdown::MAX_CONTAINERS);
+            render(&emph, Flavor::Gfm);
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[test]
+fn linked_images_keep_the_link() {
+    insta::assert_snapshot!(dump(&render(
+        "[![ci](badge.svg)](https://ci.example) ![plain](p.png)\n",
+        Flavor::Gfm
+    )));
+}
+
+#[test]
+fn lone_cr_line_endings_keep_their_lines() {
+    let model = render("a\rb\r\rc\r", Flavor::Gfm);
+    let ranges: Vec<_> = model
+        .blocks
+        .iter()
+        .map(|b| (b.source.start, b.source.end))
+        .collect();
+    assert_eq!(ranges, vec![(1, 2), (4, 4)]);
+    assert_eq!(stede_markdown::line_count("a\rb\r\nc"), 3);
+    assert_eq!(stede_markdown::line_count(""), 1);
+}
+
+#[test]
+fn footnotes_unreferenced_or_nested_stay_put() {
+    insta::assert_snapshot!(dump(&render(
+        "[^a]: unreferenced\n\n> q\n>\n> [^x]: in a quote\n>\n> after\n\nref[^x]\n",
+        Flavor::Gfm
+    )));
+}
+
+#[test]
+fn flavor_names_ignore_case() {
+    assert_eq!("GFM".parse::<Flavor>(), Ok(Flavor::Gfm));
+    assert_eq!("CommonMark".parse::<Flavor>(), Ok(Flavor::CommonMark));
+}
+
+#[test]
+fn front_matter_with_blank_lines_after_it() {
+    let model = render("---\na: 1\n---\n\n\n# H\n", Flavor::Gfm);
+    assert_eq!(model.blocks[0].kind, BlockKind::FrontMatter("a: 1".into()));
 }
 
 #[test]
