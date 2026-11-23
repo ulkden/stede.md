@@ -13,8 +13,11 @@ A fast, terminal-first Markdown reader and writer for macOS, Linux and WSL.
 ## Build
 
 ```sh
-cargo run -p stede-tui
+cargo run -p stede-tui -- [PATH]       # a folder or a Markdown file (loading files lands later in phase 1)
+cargo run -p stede-tui -- --probe       # check what your terminal supports
 ```
+
+Inside, `F1` (or `Space ?`) lists every key, and `ZZ` quits.
 
 Development setup, checks and the dependency policy are in [`CONTRIBUTING.md`](CONTRIBUTING.md).
 

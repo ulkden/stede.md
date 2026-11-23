@@ -13,7 +13,7 @@ use crate::key::{Key, format_keys};
 use crate::keymap::{Context, Keymap, Mode, Resolver, Scope, Step};
 use crate::layout::{Layout, LayoutOptions, PaneId};
 use crate::modal::{Modal, ModalBody, ModalStack, Row, Section};
-use crate::view::{PaneView, StatusView, View};
+use crate::view::{PaneView, STATUS_ROWS, StatusView, View};
 
 /// Identifies the key cheat sheet among open modals, so its hotkey toggles it.
 const CHEAT_SHEET_ID: &str = "help.keys";
@@ -47,6 +47,8 @@ pub struct App {
     message: Option<String>,
     key_timeout: Duration,
     quit: bool,
+    /// The screen size the front end last reported, in cells.
+    screen: (u16, u16),
 }
 
 impl App {
@@ -62,6 +64,7 @@ impl App {
             message: None,
             key_timeout: DEFAULT_KEY_TIMEOUT,
             quit: false,
+            screen: (80, 24),
         }
     }
 
@@ -94,8 +97,28 @@ impl App {
         Context {
             mode: self.mode,
             pane: self.layout.focus(),
-            modal: self.layout.modals().is_open(),
+            modal: self.layout.modals().top().map(|m| m.kind),
         }
+    }
+
+    /// Tells the core the screen size, so actions that depend on it (modal
+    /// scrolling) agree with what is drawn. Call it before each draw.
+    pub fn resize(&mut self, width: u16, height: u16) {
+        self.screen = (width, height);
+        // A bigger screen shows more lines, so the furthest useful scroll is
+        // smaller: clamp now so the next `k` moves the view.
+        let visible = crate::modal::max_body_rows(self.panes_height());
+        self.layout.modals_mut().clamp_scroll(visible);
+    }
+
+    /// Shows a message in the status line until the next action.
+    pub fn notify(&mut self, message: impl Into<String>) {
+        self.message = Some(message.into());
+    }
+
+    /// Height of the pane area: the screen less the status line.
+    fn panes_height(&self) -> u16 {
+        self.screen.1.saturating_sub(STATUS_ROWS)
     }
 
     /// Handles one key press.
@@ -176,6 +199,17 @@ impl App {
                     return Err("no output to reopen".into());
                 }
             }
+            "modal.scroll_down" | "modal.scroll_up" => {
+                let sign = if action.name == "modal.scroll_down" {
+                    1
+                } else {
+                    -1
+                };
+                let visible = crate::modal::max_body_rows(self.panes_height());
+                if let Some(top) = self.layout.modals_mut().top_mut() {
+                    top.scroll_by(sign * times as isize, visible);
+                }
+            }
             "pane.focus_left" | "pane.focus_right" => {
                 let step = if action.name == "pane.focus_left" {
                     -1
@@ -210,8 +244,9 @@ impl App {
         self.layout.modals_mut().open(sheet);
     }
 
-    /// The view model for a screen `width` cells wide.
-    pub fn view(&self, width: u16) -> View<'_> {
+    /// The view model for the screen size last passed to [`resize`](Self::resize).
+    pub fn view(&self) -> View<'_> {
+        let width = self.screen.0;
         let focus = self.layout.focus();
         let panes = self
             .layout
@@ -227,6 +262,10 @@ impl App {
         View {
             panes,
             modals: self.layout.modals().iter().collect(),
+            close_key: self
+                .keymap
+                .keys_for(self.mode, Scope::Modal, "modal.close")
+                .map(|keys| format_keys(&keys)),
             status: StatusView {
                 mode: self.mode.name(),
                 pending: self.resolver.pending(),
@@ -243,6 +282,7 @@ pub fn cheat_sheet(keymap: &Keymap, registry: &Registry, mode: Mode) -> Modal {
     for binding in keymap.bindings().filter(|b| b.mode == mode) {
         let title = match binding.scope {
             Scope::Modal => "In modals".to_owned(),
+            Scope::OutputModal => "In output modals".to_owned(),
             scope => format!("{} ({scope})", capitalize(mode.name())),
         };
         let description = registry
@@ -307,6 +347,52 @@ mod tests {
     }
 
     #[test]
+    fn modal_scroll_stops_at_the_last_page() {
+        let mut app = App::new(AppOptions::default());
+        app.resize(80, 12);
+        press(&mut app, "<F1>");
+        for _ in 0..100 {
+            press(&mut app, "j");
+        }
+        let lines = app.modals().top().unwrap().line_count();
+        let visible = crate::modal::max_body_rows(11);
+        assert_eq!(app.modals().top().unwrap().scroll, lines - visible);
+        press(&mut app, "k");
+        assert_eq!(app.modals().top().unwrap().scroll, lines - visible - 1);
+    }
+
+    #[test]
+    fn notify_shows_until_the_next_action() {
+        let mut app = App::new(AppOptions::default());
+        app.notify("hello");
+        assert_eq!(app.view().status.message.as_deref(), Some("hello"));
+        press(&mut app, "<leader>e");
+        assert_eq!(app.view().status.message, None);
+    }
+
+    #[test]
+    fn growing_the_screen_reclamps_modal_scroll() {
+        let mut app = App::new(AppOptions::default());
+        app.resize(80, 16);
+        press(&mut app, "<F1>");
+        for _ in 0..50 {
+            press(&mut app, "j");
+        }
+        app.resize(80, 24);
+        let before = app.modals().top().unwrap().scroll;
+        press(&mut app, "k");
+        assert_eq!(app.modals().top().unwrap().scroll, before - 1);
+        let lines = app.modals().top().unwrap().line_count();
+        assert_eq!(before, lines - crate::modal::max_body_rows(23));
+    }
+
+    #[test]
+    fn view_names_the_close_key() {
+        let app = App::new(AppOptions::default());
+        assert_eq!(app.view().close_key.as_deref(), Some("<Esc>"));
+    }
+
+    #[test]
     fn quit() {
         let mut app = App::new(AppOptions::default());
         press(&mut app, "ZZ");
@@ -329,7 +415,7 @@ mod tests {
         press(&mut app, "<leader>e<leader>p<leader>r");
         assert_eq!(app.layout().state(PaneId::Raw), PaneState::Open);
         assert_eq!(
-            app.view(80).status.message.as_deref(),
+            app.view().status.message.as_deref(),
             Some("Raw is the only open pane")
         );
     }
@@ -395,11 +481,11 @@ mod tests {
         let mut app = App::new(AppOptions::default());
         let h = press(&mut app, "<C-w>");
         assert!(h.wait);
-        assert_eq!(app.view(80).status.pending, "<C-w>");
+        assert_eq!(app.view().status.pending, "<C-w>");
         app.handle_timeout();
-        assert_eq!(app.view(80).status.pending, "");
+        assert_eq!(app.view().status.pending, "");
         assert_eq!(
-            app.view(80).status.message.as_deref(),
+            app.view().status.message.as_deref(),
             Some("<C-w> is not bound")
         );
     }
@@ -409,7 +495,7 @@ mod tests {
         let mut app = App::new(AppOptions::default());
         press(&mut app, "<leader>o");
         assert_eq!(
-            app.view(80).status.message.as_deref(),
+            app.view().status.message.as_deref(),
             Some("no output to reopen")
         );
     }
@@ -426,7 +512,7 @@ mod tests {
     #[test]
     fn view_marks_focus() {
         let app = App::new(AppOptions::default());
-        let view = app.view(100);
+        let view = app.view();
         assert_eq!(view.panes.len(), 3);
         assert!(view.panes.iter().filter(|p| p.focused).count() == 1);
         assert_eq!(view.status.mode, "normal");

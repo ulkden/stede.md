@@ -1,0 +1,20 @@
+---
+source: crates/stede-tui/src/ui.rs
+expression: "render(&mut app, 80, 16)"
+---
+"┌ Raw ─────────────────────────┐┌ Rendered ────────────────────┐┌ Files ───────┐"
+"│                              ││                              ││              │"
+"│       ┌ Keys ────────────────────────────────────────────────────────┐       │"
+"│       │ <Space>e  pane.toggle tree      Fold or open a pane: raw, re │       │"
+"│       │ <Space>o  modal.reopen_last     Reopen the last output modal │       │"
+"│       │ <Space>p  pane.toggle rendered  Fold or open a pane: raw, re │       │"
+"│       │ <Space>r  pane.toggle raw       Fold or open a pane: raw, re │       │"
+"│       │ <Space>z  pane.focus_one        Fold every pane but this one │       │"
+"│       │ ZQ        app.quit              Quit STEDE.md                │       │"
+"│       │ ZZ        app.quit              Quit STEDE.md                │       │"
+"│       │ <C-h>     pane.focus_left       Move focus to the pane on th │       │"
+"│       └────────────────────────────────────────────── <Esc> to close ┘       │"
+"│                              ││                              ││              │"
+"│                              ││                              ││              │"
+"└──────────────────────────────┘└──────────────────────────────┘└──────────────┘"
+" NORMAL                                                                         "

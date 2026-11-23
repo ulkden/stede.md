@@ -6,6 +6,26 @@
 //! lost by closing it. The stack lives in the core so every front end draws
 //! the same modals with the same keys.
 
+/// The most of the pane area a modal may cover, in percent. Front ends size
+/// modals with [`max_size`] so the core's scrolling matches what is drawn.
+pub const MAX_WIDTH_PCT: u16 = 80;
+pub const MAX_HEIGHT_PCT: u16 = 70;
+
+/// Rows a modal's border takes (top and bottom).
+pub const BORDER_ROWS: u16 = 2;
+
+/// The largest modal, in cells, for a pane area of this size.
+pub fn max_size(width: u16, height: u16) -> (u16, u16) {
+    let w = u32::from(width) * u32::from(MAX_WIDTH_PCT) / 100;
+    let h = u32::from(height) * u32::from(MAX_HEIGHT_PCT) / 100;
+    (w as u16, h as u16)
+}
+
+/// How many body lines fit in the largest modal for a pane area this tall.
+pub fn max_body_rows(height: u16) -> usize {
+    usize::from(max_size(0, height).1.saturating_sub(BORDER_ROWS))
+}
+
 /// What kind of modal this is. It decides which keys work inside it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModalKind {
@@ -66,6 +86,26 @@ impl Modal {
             body,
             scroll: 0,
         }
+    }
+
+    /// How many lines the body takes when drawn: a table is its header line,
+    /// then each section's title line followed by its rows. Front ends draw
+    /// tables in exactly this shape, so scrolling agrees with what is shown.
+    pub fn line_count(&self) -> usize {
+        match &self.body {
+            ModalBody::Text(lines) => lines.len(),
+            ModalBody::Table { sections, .. } => {
+                1 + sections.iter().map(|s| 1 + s.rows.len()).sum::<usize>()
+            }
+        }
+    }
+
+    /// Scrolls by `delta` lines. `visible` is how many body lines show; the
+    /// scroll stops where the last line reaches the bottom, so scrolling back
+    /// always moves the view.
+    pub fn scroll_by(&mut self, delta: isize, visible: usize) {
+        let max = self.line_count().saturating_sub(visible.max(1));
+        self.scroll = self.scroll.saturating_add_signed(delta).min(max);
     }
 
     /// Sets the modal's identity.
@@ -129,6 +169,14 @@ impl ModalStack {
         }
     }
 
+    /// Keeps every modal's scroll, open or remembered, within what shows when
+    /// `visible` body lines fit. Call it when the screen size changes.
+    pub fn clamp_scroll(&mut self, visible: usize) {
+        for modal in self.stack.iter_mut().chain(self.last_output.as_mut()) {
+            modal.scroll_by(0, visible);
+        }
+    }
+
     /// Where the modal with this id sits, counting from the bottom.
     pub fn position(&self, id: &str) -> Option<usize> {
         self.stack.iter().position(|m| m.id == Some(id))
@@ -181,6 +229,70 @@ mod tests {
 
     fn out(title: &str) -> Modal {
         Modal::output(title, ModalBody::Text(vec![title.to_owned()]))
+    }
+
+    #[test]
+    fn line_count_and_scroll() {
+        let mut m = Modal::output(
+            "t",
+            ModalBody::Table {
+                headers: vec!["a".into()],
+                sections: vec![
+                    Section {
+                        title: "s1".into(),
+                        rows: vec![
+                            Row {
+                                cells: vec!["x".into()]
+                            };
+                            2
+                        ],
+                    },
+                    Section {
+                        title: "s2".into(),
+                        rows: vec![Row {
+                            cells: vec!["y".into()],
+                        }],
+                    },
+                ],
+            },
+        );
+        assert_eq!(m.line_count(), 1 + 3 + 2);
+        m.scroll_by(-3, 2);
+        assert_eq!(m.scroll, 0);
+        m.scroll_by(100, 2);
+        assert_eq!(
+            m.scroll, 4,
+            "6 lines, 2 visible: stops with the last line at the bottom"
+        );
+        m.scroll_by(-1, 2);
+        assert_eq!(m.scroll, 3, "and the first press back moves the view");
+        m.scroll_by(100, 10);
+        assert_eq!(m.scroll, 0, "everything fits: no scroll");
+    }
+
+    #[test]
+    fn size_limits() {
+        assert_eq!(max_size(100, 40), (80, 28));
+        assert_eq!(max_body_rows(40), 26);
+        assert_eq!(max_body_rows(1), 0);
+    }
+
+    #[test]
+    fn clamp_scroll_covers_open_and_remembered_modals() {
+        let long = || {
+            let mut m = Modal::output("t", ModalBody::Text(vec!["x".into(); 20]));
+            m.scroll = 18;
+            m
+        };
+        let mut s = ModalStack::new();
+        s.open(long());
+        s.close();
+        s.open(long());
+        s.clamp_scroll(10);
+        assert_eq!(s.top().unwrap().scroll, 10);
+        s.close_all();
+        s.reopen_last();
+        assert_eq!(s.top().unwrap().scroll, 10);
     }
 
     #[test]

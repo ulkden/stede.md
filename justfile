@@ -68,6 +68,10 @@ audit:
 dep-age *args:
     python3 scripts/dependency-age.py {{ args }}
 
+# Pin too-new crates in Cargo.lock to their newest release that is 14+ days old
+dep-settle *args:
+    python3 scripts/dependency-age.py --fix {{ args }}
+
 # Spell check code and docs
 typos:
     typos

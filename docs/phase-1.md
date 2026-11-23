@@ -9,7 +9,7 @@ Each step is one PR through the `stede-pr-review` loop. Tick a step when its PR 
 
 ## Steps
 
-- [ ] **1. Core foundations** (`stede-core`, no new crates)
+- [x] **1. Core foundations** (`stede-core`, no new crates)
   - Keys in Vim notation, the action registry, keymaps as data (counts, sequences, timeout)
   - The layout model: open, folded or off panes, focus moves, `focus_one`, geometry
   - The modal stack, the key cheat sheet built from the live keymap, and the core loop with its view model
@@ -40,7 +40,7 @@ Each step is one PR through the `stede-pr-review` loop. Tick a step when its PR 
 
 ## Phase 0 checks that need real terminals
 
-The phase 0 spike also asked for proof in real terminals, which CI can't give. Step 2 adds `stede --probe`, a small screen that exercises each one. Run it in each terminal and tick what works:
+The phase 0 spike also asked for proof in real terminals, which CI can't give. Run `stede --probe` (`cargo run -p stede-tui -- --probe`) in each terminal. It prints a sample for each check and then echoes keys as STEDE.md sees them; press `q` twice to leave. Tick what works:
 
 | Check | Ghostty | Terminal.app | kitty | WezTerm | GNOME Terminal | Windows Terminal (WSL) | tmux |
 | --- | --- | --- | --- | --- | --- | --- | --- |

@@ -1,0 +1,14 @@
+---
+source: crates/stede-tui/src/ui.rs
+expression: "render(&mut app, 40, 10)"
+---
+"R┌ Rendered ──────────────────────────┐F"
+"a│                                    │i"
+"w│                                    │l"
+" │                                    │e"
+" │                                    │s"
+" │                                    │ "
+" │                                    │ "
+" │                                    │ "
+" └────────────────────────────────────┘ "
+" NORMAL                                 "

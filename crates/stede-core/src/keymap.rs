@@ -14,6 +14,7 @@ use std::fmt;
 use crate::action::{Action, Registry};
 use crate::key::{Key, KeyCode, KeyParseError, format_keys, parse_keys};
 use crate::layout::PaneId;
+use crate::modal::ModalKind;
 
 /// Editing modes. Phase 1 (the reader) uses Normal only.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -39,8 +40,11 @@ pub enum Scope {
     Global,
     /// One pane, ahead of the global bindings.
     Pane(PaneId),
-    /// Inside any modal. While a modal is open, only these apply.
+    /// Inside any modal. While a modal is open, only modal scopes apply.
     Modal,
+    /// Inside output modals only (the cheat sheet, lint lists): reading keys
+    /// such as `j`/`k`, which input and picker modals need for typing.
+    OutputModal,
 }
 
 impl fmt::Display for Scope {
@@ -49,6 +53,7 @@ impl fmt::Display for Scope {
             Scope::Global => f.write_str("all panes"),
             Scope::Pane(p) => write!(f, "{} pane", p.title()),
             Scope::Modal => f.write_str("modals"),
+            Scope::OutputModal => f.write_str("output modals"),
         }
     }
 }
@@ -58,16 +63,17 @@ impl fmt::Display for Scope {
 pub struct Context {
     pub mode: Mode,
     pub pane: PaneId,
-    pub modal: bool,
+    /// The kind of the top modal, if one is open.
+    pub modal: Option<ModalKind>,
 }
 
 impl Context {
     /// Scopes to search, highest priority first.
     fn scopes(&self) -> Vec<Scope> {
-        if self.modal {
-            vec![Scope::Modal]
-        } else {
-            vec![Scope::Pane(self.pane), Scope::Global]
+        match self.modal {
+            Some(ModalKind::Output) => vec![Scope::OutputModal, Scope::Modal],
+            Some(_) => vec![Scope::Modal],
+            None => vec![Scope::Pane(self.pane), Scope::Global],
         }
     }
 }
@@ -161,7 +167,7 @@ impl Keymap {
         // A leading 1-9 always starts a count in Normal mode, so such a
         // binding could never run.
         if mode == Mode::Normal
-            && scope != Scope::Modal
+            && matches!(scope, Scope::Global | Scope::Pane(_))
             && parsed[0].digit().is_some_and(|d| d != 0)
         {
             return Err(BindError::CountPrefix(keys.to_owned()));
@@ -171,6 +177,15 @@ impl Keymap {
             .or_default()
             .insert(parsed, action);
         Ok(())
+    }
+
+    /// The first keys (in key order) bound to `action` in this mode and scope.
+    pub fn keys_for(&self, mode: Mode, scope: Scope, action: &str) -> Option<Vec<Key>> {
+        self.tables
+            .get(&(mode, scope))?
+            .iter()
+            .find(|(_, a)| a.name == action)
+            .map(|(keys, _)| keys.clone())
     }
 
     /// Every binding, by mode, then scope, then keys.
@@ -270,7 +285,7 @@ impl Resolver {
             self.reset();
             // In a modal, Esc is also the close key: one press closes it even
             // with keys half-typed. Elsewhere it only cancels them.
-            if !ctx.modal {
+            if ctx.modal.is_none() {
                 return Step::Cancelled;
             }
         }
@@ -279,7 +294,7 @@ impl Resolver {
         let count_digit = key
             .digit()
             .filter(|&d| d != 0 || self.count.is_some())
-            .filter(|_| !ctx.modal && ctx.mode == Mode::Normal && self.pending.is_empty());
+            .filter(|_| ctx.modal.is_none() && ctx.mode == Mode::Normal && self.pending.is_empty());
         if let Some(d) = count_digit {
             let next = self.count.unwrap_or(0).saturating_mul(10).saturating_add(d);
             self.count = Some(next.min(MAX_COUNT));
@@ -324,7 +339,7 @@ impl Resolver {
 }
 
 use Mode::Normal;
-use Scope::{Global, Modal};
+use Scope::{Global, Modal, OutputModal};
 
 /// The built-in bindings: mode, scope, keys, action.
 ///
@@ -345,6 +360,10 @@ const DEFAULT_BINDINGS: &[(Mode, Scope, &str, &str)] = &[
     (Normal, Global, "<leader>o", "modal.reopen_last"),
     (Normal, Modal, "<Esc>", "modal.close"),
     (Normal, Modal, "<C-c>", "modal.close_all"),
+    (Normal, OutputModal, "j", "modal.scroll_down"),
+    (Normal, OutputModal, "<Down>", "modal.scroll_down"),
+    (Normal, OutputModal, "k", "modal.scroll_up"),
+    (Normal, OutputModal, "<Up>", "modal.scroll_up"),
     (Normal, Modal, "<leader>?", "help.keys"),
     (Normal, Modal, "<F1>", "help.keys"),
 ];
@@ -363,7 +382,7 @@ mod tests {
         Context {
             mode: Mode::Normal,
             pane: PaneId::Raw,
-            modal: false,
+            modal: None,
         }
     }
 
@@ -559,7 +578,7 @@ mod tests {
     fn esc_closes_a_modal_even_with_keys_pending() {
         let (_, k) = setup();
         let modal = Context {
-            modal: true,
+            modal: Some(ModalKind::Output),
             ..ctx()
         };
         let mut res = Resolver::new();
@@ -577,7 +596,7 @@ mod tests {
         let (_, k) = setup();
         let mut res = Resolver::new();
         let modal = Context {
-            modal: true,
+            modal: Some(ModalKind::Output),
             ..ctx()
         };
         assert_eq!(
@@ -592,6 +611,33 @@ mod tests {
         assert_eq!(
             res.feed(&k, modal, Key::char('3')),
             Step::Unbound("3".into())
+        );
+    }
+
+    #[test]
+    fn reading_keys_only_apply_in_output_modals() {
+        let (_, k) = setup();
+        let mut res = Resolver::new();
+        let output = Context {
+            modal: Some(ModalKind::Output),
+            ..ctx()
+        };
+        let input = Context {
+            modal: Some(ModalKind::Input),
+            ..ctx()
+        };
+        assert_eq!(
+            res.feed(&k, output, Key::char('j')),
+            run("modal.scroll_down", &[], None)
+        );
+        assert_eq!(
+            res.feed(&k, input, Key::char('j')),
+            Step::Unbound("j".into())
+        );
+        // The close key works in every modal.
+        assert_eq!(
+            res.feed(&k, input, Key::plain(KeyCode::Esc)),
+            run("modal.close", &[], None)
         );
     }
 

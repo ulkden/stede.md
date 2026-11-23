@@ -16,6 +16,10 @@ path = "src/main.rs"
 stede-core.workspace = true
 stede-markdown.workspace = true
 stede-services.workspace = true
+ratatui.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
 
 [lints]
 workspace = true
