@@ -50,7 +50,7 @@ These checks come from `CLAUDE.md` and `docs/architecture.md`. Breaking a settle
 - [ ] Every new `.rs` file starts with `// SPDX-License-Identifier: GPL-3.0-or-later`.
 - [ ] No `unsafe`. It is forbidden workspace-wide, so the compiler catches it; check that nobody tries to relax the lint (Critical).
 - [ ] New crates go in `[workspace.dependencies]` with a full version, and member crates use `.workspace = true`. Check:
-  - The release is at least 14 days old, unless it's a patch or security fix.
+  - The release is at least 14 days old, unless it's a patch or security fix. The `Dependency age` check enforces this; a `dependency-age-exempt` label needs a stated reason in the PR.
   - The license is on the `deny.toml` allow list. Adding a license needs a reason in the PR.
   - The phase actually needs it now, per "Add dependencies as a phase needs them" in `CLAUDE.md`.
 - [ ] Tool versions and the MSRV are defined once: tools in the `justfile`, MSRV in `Cargo.toml`. Workflows read them through `.github/actions/setup`, never hard-code them. Actions are pinned to a commit SHA with a version comment.

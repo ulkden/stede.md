@@ -26,6 +26,7 @@ just install-hooks                   # optional: fmt and spell check before each
 | `just deny` | Licenses, advisories, bans and sources |
 | `just layers` | Fail if `stede-core`, `stede-markdown` or `stede-services` depends on a UI crate |
 | `just msrv` | Build on the minimum supported Rust version (`rust-version` in `Cargo.toml`) |
+| `just dep-age` | Check that every dependency version new since `origin/main` is 14+ days old |
 
 CI (`.github/workflows/ci.yml`) runs the same recipes on Linux and macOS, with the same tool versions and MSRV, all read from the `justfile` and `Cargo.toml`. A separate daily job (`audit.yml`) checks the committed `Cargo.lock` against the RustSec advisory database.
 
@@ -51,6 +52,16 @@ A new release has to be **14 days old** before we take it. Most broken or hijack
 - **Security fixes** come in at once. Dependabot security updates skip the cooldown, and the daily audit fails as soon as an advisory matches `Cargo.lock`.
 
 If you add a new dependency or bump one by hand, follow the same rule. Pick a release that is at least 14 days old unless it is a patch or security fix. Then run `just deny` to check its license.
+
+**CI enforces the rule.** The `Dependency age` workflow (`scripts/dependency-age.py`) checks every version a PR introduces:
+- crates in `Cargo.lock`, direct and transitive
+- the toolchain
+- GitHub Actions
+- the dev tools in the `justfile`
+
+A version passes if it is 14+ days old or a patch bump. The check also fails on loose pins: a `stable` toolchain channel, an action not pinned to a commit SHA, or a version comment that doesn't match its SHA. This matters most for the toolchain, where Dependabot can't apply its cooldown because the registry gives no publish date.
+
+A PR that is too new fails until its eligible date, which the check prints. Re-run the job after that date. For a security fix that isn't a patch bump, add the `dependency-age-exempt` label and say why in the PR; the check then reports without failing. Run it locally with `just dep-age`.
 
 ### The update cycle
 
