@@ -43,7 +43,6 @@ pub struct App {
     keymap: Keymap,
     resolver: Resolver,
     layout: Layout,
-    modals: ModalStack,
     mode: Mode,
     message: Option<String>,
     key_timeout: Duration,
@@ -59,7 +58,6 @@ impl App {
             keymap,
             resolver: Resolver::new(),
             layout: Layout::new(options.layout),
-            modals: ModalStack::new(),
             mode: Mode::Normal,
             message: None,
             key_timeout: DEFAULT_KEY_TIMEOUT,
@@ -80,7 +78,7 @@ impl App {
     }
 
     pub fn modals(&self) -> &ModalStack {
-        &self.modals
+        self.layout.modals()
     }
 
     /// True once `app.quit` has run; the front end should exit.
@@ -96,7 +94,7 @@ impl App {
         Context {
             mode: self.mode,
             pane: self.layout.focus(),
-            modal: self.modals.is_open(),
+            modal: self.layout.modals().is_open(),
         }
     }
 
@@ -124,6 +122,11 @@ impl App {
             Step::Pending => Handled {
                 redraw: true,
                 wait: true,
+            },
+            // A count waits for its key with no timeout.
+            Step::Count => Handled {
+                redraw: true,
+                wait: false,
             },
             Step::Cancelled => {
                 self.message = None;
@@ -163,13 +166,13 @@ impl App {
             "app.quit" => self.quit = true,
             "help.keys" => self.toggle_cheat_sheet(),
             "modal.close" => {
-                self.modals.close();
+                self.layout.modals_mut().close();
             }
             "modal.close_all" => {
-                self.modals.close_all();
+                self.layout.modals_mut().close_all();
             }
             "modal.reopen_last" => {
-                if !self.modals.reopen_last() {
+                if !self.layout.modals_mut().reopen_last() {
                     return Err("no output to reopen".into());
                 }
             }
@@ -179,11 +182,7 @@ impl App {
                 } else {
                     1
                 };
-                for _ in 0..times {
-                    if !self.layout.focus_step(step) {
-                        break;
-                    }
-                }
+                self.layout.focus_step(step, times);
             }
             "pane.focus_one" => self.layout.focus_one(),
             "pane.toggle" => {
@@ -202,15 +201,16 @@ impl App {
 
     fn toggle_cheat_sheet(&mut self) {
         if self
-            .modals
+            .layout
+            .modals()
             .top()
             .is_some_and(|m| m.kind == ModalKind::Output && m.title == CHEAT_SHEET_TITLE)
         {
-            self.modals.close();
+            self.layout.modals_mut().close();
             return;
         }
         let sheet = cheat_sheet(&self.keymap, &self.registry, self.mode);
-        self.modals.open(sheet);
+        self.layout.modals_mut().open(sheet);
     }
 
     /// The view model for a screen `width` cells wide.
@@ -229,7 +229,7 @@ impl App {
             .collect();
         View {
             panes,
-            modals: self.modals.iter().collect(),
+            modals: self.layout.modals().iter().collect(),
             status: StatusView {
                 mode: self.mode.name(),
                 pending: self.resolver.pending(),
@@ -296,6 +296,16 @@ mod tests {
             last = app.handle_key(key);
         }
         last
+    }
+
+    #[test]
+    fn a_count_typed_slowly_still_applies() {
+        let mut app = App::new(AppOptions::default());
+        let h = press(&mut app, "2");
+        assert!(!h.wait, "a bare count asks for no timeout");
+        app.handle_timeout();
+        press(&mut app, "<C-l>");
+        assert_eq!(app.layout().focus(), PaneId::Tree);
     }
 
     #[test]

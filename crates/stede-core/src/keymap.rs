@@ -87,6 +87,8 @@ pub enum BindError {
     Keys(String, KeyParseError),
     EmptyAction(String),
     UnknownAction(String),
+    /// Normal-mode keys can't start with `1`-`9`: those type a count.
+    CountPrefix(String),
 }
 
 impl fmt::Display for BindError {
@@ -95,6 +97,10 @@ impl fmt::Display for BindError {
             Self::Keys(keys, e) => write!(f, "bad keys {keys:?}: {e}"),
             Self::EmptyAction(keys) => write!(f, "keys {keys:?} are bound to an empty action"),
             Self::UnknownAction(name) => write!(f, "unknown action {name:?}"),
+            Self::CountPrefix(keys) => write!(
+                f,
+                "keys {keys:?} start with a digit, which types a count in Normal mode"
+            ),
         }
     }
 }
@@ -152,6 +158,14 @@ impl Keymap {
         if !registry.contains(&action.name) {
             return Err(BindError::UnknownAction(action.name));
         }
+        // A leading 1-9 always starts a count in Normal mode, so such a
+        // binding could never run.
+        if mode == Mode::Normal
+            && scope != Scope::Modal
+            && parsed[0].digit().is_some_and(|d| d != 0)
+        {
+            return Err(BindError::CountPrefix(keys.to_owned()));
+        }
         self.tables
             .entry((mode, scope))
             .or_default()
@@ -196,6 +210,8 @@ impl Keymap {
 pub enum Step {
     /// More keys may follow. Call [`Resolver::timeout`] if none come in time.
     Pending,
+    /// A count digit was typed. Wait for the next key; there is no timeout.
+    Count,
     /// Run this action, `count` times if a count was typed.
     Run { action: Action, count: Option<u32> },
     /// The keys typed match no binding.
@@ -250,7 +266,7 @@ impl Resolver {
         if let Some(d) = count_digit {
             let next = self.count.unwrap_or(0).saturating_mul(10).saturating_add(d);
             self.count = Some(next.min(MAX_COUNT));
-            return Step::Pending;
+            return Step::Count;
         }
 
         self.pending.push(key);
@@ -263,6 +279,8 @@ impl Resolver {
                 action: action.clone(),
                 count: self.count,
             },
+            // A bare, unbound `<Esc>` is habit, not a mistake: say nothing.
+            None if self.pending == [Key::plain(KeyCode::Esc)] => Step::Cancelled,
             None => Step::Unbound(self.pending()),
         };
         self.reset();
@@ -273,8 +291,7 @@ impl Resolver {
     /// binding, else report it unbound. Returns `None` if nothing was pending.
     pub fn timeout(&mut self, keymap: &Keymap, ctx: Context) -> Option<Step> {
         if self.pending.is_empty() {
-            // A bare count with no key after it does nothing.
-            self.count = None;
+            // A count alone doesn't time out: it waits for its key, as in Vim.
             return None;
         }
         let step = match keymap.exact(ctx, &self.pending) {
@@ -405,9 +422,44 @@ mod tests {
         );
         assert_eq!(
             feed_str(&mut res, &k, ctx(), "3<C-w><Esc>"),
-            vec![Step::Pending, Step::Pending, Step::Cancelled]
+            vec![Step::Count, Step::Pending, Step::Cancelled]
         );
         assert!(!res.is_pending());
+        // A bare Esc with nothing pending is quiet.
+        assert_eq!(
+            res.feed(&k, ctx(), Key::plain(KeyCode::Esc)),
+            Step::Cancelled
+        );
+    }
+
+    #[test]
+    fn a_count_survives_a_pause() {
+        let (_, k) = setup();
+        let mut res = Resolver::new();
+        assert_eq!(res.feed(&k, ctx(), Key::char('3')), Step::Count);
+        assert_eq!(res.timeout(&k, ctx()), None);
+        assert_eq!(
+            res.feed(&k, ctx(), Key::ctrl('l')),
+            run("pane.focus_right", &[], Some(3))
+        );
+    }
+
+    #[test]
+    fn digit_leading_bindings_are_rejected() {
+        let r = Registry::with_builtins();
+        let mut k = Keymap::new(Key::char(' '));
+        assert_eq!(
+            k.bind(Mode::Normal, Scope::Global, "1", "app.quit", &r),
+            Err(BindError::CountPrefix("1".into()))
+        );
+        assert!(
+            k.bind(Mode::Normal, Scope::Global, "0", "app.quit", &r)
+                .is_ok()
+        );
+        assert!(
+            k.bind(Mode::Normal, Scope::Modal, "1", "app.quit", &r)
+                .is_ok()
+        );
     }
 
     #[test]

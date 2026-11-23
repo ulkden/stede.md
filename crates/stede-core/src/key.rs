@@ -62,18 +62,27 @@ pub struct Key {
 impl Key {
     /// Builds a normalized key.
     ///
-    /// - Shift on a character is dropped: the character already says it (`G`).
+    /// - Shift on a character is folded into it, then dropped: Shift+`g` and
+    ///   `<S-g>` are both `G`.
     /// - Ctrl with a letter uses the lowercase letter, so `<C-W>` equals `<C-w>`.
+    /// - Shift on Back-Tab is dropped: Back-Tab already means Shift+Tab.
     pub fn new(code: KeyCode, mods: Modifiers) -> Self {
         let mut mods = mods;
         let code = match code {
             KeyCode::Char(c) => {
+                let shifted = mods.shift;
                 mods.shift = false;
                 if mods.ctrl && c.is_ascii_alphabetic() {
                     KeyCode::Char(c.to_ascii_lowercase())
+                } else if shifted && c.is_ascii_lowercase() {
+                    KeyCode::Char(c.to_ascii_uppercase())
                 } else {
                     KeyCode::Char(c)
                 }
+            }
+            KeyCode::BackTab => {
+                mods.shift = false;
+                KeyCode::BackTab
             }
             other => other,
         };
@@ -138,6 +147,13 @@ impl fmt::Display for Key {
             KeyCode::F(n) => format!("F{n}"),
         };
         let plain_char = matches!(self.code, KeyCode::Char(c) if c != ' ' && c != '<' && c != '\\');
+        let modified = self.mods != Modifiers::NONE;
+        // A modified `>` would close the brackets early: `<C->>`. Name it instead.
+        let name = if modified && self.code == KeyCode::Char('>') {
+            "gt".to_owned()
+        } else {
+            name
+        };
         let mut prefix = String::new();
         if self.mods.ctrl {
             prefix.push_str("C-");
@@ -271,6 +287,7 @@ fn parse_named(inner: &str) -> Option<Key> {
         "pagedown" => KeyCode::PageDown,
         "space" => KeyCode::Char(' '),
         "lt" => KeyCode::Char('<'),
+        "gt" => KeyCode::Char('>'),
         "bslash" => KeyCode::Char('\\'),
         name if name.starts_with('f') && name.len() > 1 => {
             let n: u8 = name[1..].parse().ok()?;
@@ -355,6 +372,26 @@ mod tests {
             parse_keys("<F99>", None),
             Err(KeyParseError::UnknownName("F99".into()))
         );
+    }
+
+    #[test]
+    fn shift_folds_into_letters_and_back_tab() {
+        assert_eq!(keys("<S-g>"), vec![Key::char('G')]);
+        let shift = Modifiers {
+            shift: true,
+            ..Modifiers::NONE
+        };
+        assert_eq!(Key::new(KeyCode::Char('g'), shift), Key::char('G'));
+        assert_eq!(Key::new(KeyCode::BackTab, shift), keys("<S-Tab>")[0]);
+        assert_eq!(Key::new(KeyCode::BackTab, shift).to_string(), "<S-Tab>");
+    }
+
+    #[test]
+    fn modified_greater_than_round_trips() {
+        let k = Key::ctrl('>');
+        assert_eq!(k.to_string(), "<C-gt>");
+        assert_eq!(keys(&k.to_string()), vec![k]);
+        assert_eq!(keys(">"), vec![Key::char('>')]);
     }
 
     #[test]

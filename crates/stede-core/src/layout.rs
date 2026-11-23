@@ -7,9 +7,13 @@
 //!
 //! Widths are computed here in cells, so every front end lays panes out the
 //! same way. Animation is applied by the front end on top of these targets.
+//!
+//! The modal stack lives here too, next to the panes it opens over.
 
 use std::fmt;
 use std::str::FromStr;
+
+use crate::modal::ModalStack;
 
 /// The panes in v1.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -122,6 +126,7 @@ pub struct Layout {
     strip_width: u16,
     /// States saved by `focus_one`, restored when it is pressed again.
     saved: Option<Vec<PaneState>>,
+    modals: ModalStack,
 }
 
 impl Default for Layout {
@@ -160,6 +165,7 @@ impl Layout {
             focus: PaneId::Raw,
             strip_width: options.strip_width.max(1),
             saved: None,
+            modals: ModalStack::new(),
         }
     }
 
@@ -182,28 +188,57 @@ impl Layout {
         self.saved.is_some()
     }
 
+    /// The modals open over the panes.
+    pub fn modals(&self) -> &ModalStack {
+        &self.modals
+    }
+
+    pub fn modals_mut(&mut self) -> &mut ModalStack {
+        &mut self.modals
+    }
+
     /// Gives focus to a pane, opening it if it is folded or off.
+    ///
+    /// Peeking into a strip this way keeps a `focus_one` layout saved, so
+    /// `focus_one` still restores it afterwards.
     pub fn focus_pane(&mut self, id: PaneId) {
-        if self.state(id) != PaneState::Open {
-            self.set_state(id, PaneState::Open);
-        }
+        let i = self.index(id);
+        self.slots[i].state = PaneState::Open;
         self.focus = id;
     }
 
-    /// Moves focus one pane left (`-1`) or right (`+1`), skipping panes that are
-    /// off. A folded pane opens as focus enters it. Returns false at the edge.
-    pub fn focus_step(&mut self, step: i32) -> bool {
-        let here = self.index(self.focus) as i32;
-        let mut i = here + step;
-        while i >= 0 && (i as usize) < self.slots.len() {
-            let id = self.slots[i as usize].id;
-            if self.state(id) != PaneState::Off {
-                self.focus_pane(id);
-                return true;
-            }
-            i += step;
+    /// Moves focus `times` panes left (`step < 0`) or right (`step > 0`),
+    /// skipping panes that are off, and stopping at the edge. Only the pane
+    /// focus lands on opens; folded panes passed on the way stay folded.
+    /// Returns false if focus didn't move.
+    pub fn focus_step(&mut self, step: i32, times: u32) -> bool {
+        let dir = step.signum();
+        if dir == 0 {
+            return false;
         }
-        false
+        let mut i = self.index(self.focus) as i32;
+        let mut target = None;
+        for _ in 0..times.max(1) {
+            let mut j = i + dir;
+            while j >= 0
+                && (j as usize) < self.slots.len()
+                && self.slots[j as usize].state == PaneState::Off
+            {
+                j += dir;
+            }
+            if j < 0 || j as usize >= self.slots.len() {
+                break;
+            }
+            i = j;
+            target = Some(self.slots[j as usize].id);
+        }
+        match target {
+            Some(id) => {
+                self.focus_pane(id);
+                true
+            }
+            None => false,
+        }
     }
 
     /// Folds an open pane or opens a folded (or off) one.
@@ -396,16 +431,44 @@ mod tests {
     fn moving_into_a_strip_opens_it() {
         let mut l = Layout::default();
         l.toggle(PaneId::Rendered);
-        assert!(l.focus_step(1));
+        assert!(l.focus_step(1, 1));
         assert_eq!(l.focus(), PaneId::Rendered);
         assert_eq!(l.state(PaneId::Rendered), PaneState::Open);
-        assert!(l.focus_step(1));
+        assert!(l.focus_step(1, 1));
         assert_eq!(l.focus(), PaneId::Tree);
-        assert!(!l.focus_step(1), "right edge");
-        assert!(l.focus_step(-1));
-        assert!(l.focus_step(-1));
-        assert!(!l.focus_step(-1), "left edge");
+        assert!(!l.focus_step(1, 1), "right edge");
+        assert!(l.focus_step(-1, 1));
+        assert!(l.focus_step(-1, 1));
+        assert!(!l.focus_step(-1, 1), "left edge");
         assert_eq!(l.focus(), PaneId::Raw);
+    }
+
+    #[test]
+    fn counted_moves_open_only_the_target() {
+        let mut l = Layout::default();
+        l.toggle(PaneId::Rendered);
+        l.toggle(PaneId::Tree);
+        assert!(l.focus_step(1, 2));
+        assert_eq!(l.focus(), PaneId::Tree);
+        assert_eq!(l.state(PaneId::Rendered), PaneState::Folded);
+        // Past the edge stops at the last pane.
+        assert!(l.focus_step(-1, 9));
+        assert_eq!(l.focus(), PaneId::Raw);
+    }
+
+    #[test]
+    fn peeking_keeps_focus_one_restorable() {
+        let mut l = Layout::default();
+        l.focus_one();
+        assert!(l.focus_step(1, 1), "peek into the Rendered strip");
+        assert_eq!(l.state(PaneId::Rendered), PaneState::Open);
+        assert!(l.is_focused_one());
+        l.focus_one();
+        assert!(!l.is_focused_one());
+        for id in PaneId::ALL {
+            assert_eq!(l.state(id), PaneState::Open, "{id}");
+        }
+        assert_eq!(l.focus(), PaneId::Rendered);
     }
 
     #[test]
