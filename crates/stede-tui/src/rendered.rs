@@ -21,6 +21,8 @@ pub struct RenderCache {
     pub generation: u64,
     pub width: usize,
     pub theme_epoch: u64,
+    /// Whether it holds a layout (an empty document's is empty but done).
+    pub laid_out: bool,
     /// Each block's rows.
     pub blocks: Vec<Vec<Line<'static>>>,
 }
@@ -39,7 +41,7 @@ impl RenderCache {
         if self.generation == generation
             && self.width == width
             && self.theme_epoch == theme_epoch
-            && !self.blocks.is_empty()
+            && self.laid_out
         {
             return false;
         }
@@ -47,6 +49,7 @@ impl RenderCache {
         self.generation = generation;
         self.width = width;
         self.theme_epoch = theme_epoch;
+        self.laid_out = true;
         true
     }
 
@@ -67,17 +70,19 @@ pub fn layout(model: &RenderModel, width: usize, theme: &Theme) -> Vec<Vec<Line<
         {
             rows.push(Line::default());
         }
-        // An alert's label goes above its first block.
-        if let Some(Container::Alert { kind, title }) = block
+        // An alert's label goes above its first block. The label row takes
+        // any list marker, so the block's own first row is an indent.
+        let mut marker_used = false;
+        if let Some(Container::Alert {
+            kind,
+            title,
+            continuation: false,
+        }) = block
             .containers
             .iter()
             .find(|c| matches!(c, Container::Alert { .. }))
-            && !previous.is_some_and(|p| {
-                p.containers
-                    .iter()
-                    .any(|c| matches!(c, Container::Alert { .. }))
-            })
         {
+            marker_used = true;
             let label = title
                 .clone()
                 .unwrap_or_else(|| alert_label(*kind).to_owned());
@@ -89,7 +94,7 @@ pub fn layout(model: &RenderModel, width: usize, theme: &Theme) -> Vec<Vec<Line<
             spans.push(Span::styled(label, style));
             rows.push(Line::from(spans));
         }
-        rows.extend(block_rows(block, width, theme));
+        rows.extend(block_rows(block, width, theme, marker_used));
         out.push(rows);
         previous = Some(block);
     }
@@ -191,8 +196,9 @@ fn spans_width(spans: &[Span]) -> usize {
 }
 
 /// A block's rows, each with its container prefix.
-fn block_rows(block: &Block, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+fn block_rows(block: &Block, width: usize, theme: &Theme, marker_used: bool) -> Vec<Line<'static>> {
     let (head, rest) = prefixes(&block.containers, theme, true);
+    let head = if marker_used { rest.clone() } else { head };
     let prefix_width = spans_width(&head).max(spans_width(&rest));
     // Very deep nesting leaves at least a few cells for the content.
     let inner = width.saturating_sub(prefix_width).max(width.min(4)).max(1);
@@ -299,11 +305,12 @@ fn styled(spans: &[MdSpan], base: Style, theme: &Theme) -> Vec<(String, Style)> 
             if st.link {
                 style = style.fg(theme.accent).add_modifier(Modifier::UNDERLINED);
             }
+            // Tabs as spaces, so cells are measured as they're drawn.
             let text = if st.image {
                 style = style.fg(theme.dim).add_modifier(Modifier::ITALIC);
-                format!("▣ {}", s.text)
+                format!("▣ {}", s.text.replace('\t', "    "))
             } else {
-                s.text.clone()
+                s.text.replace('\t', "    ")
             };
             (text, style)
         })
@@ -576,6 +583,15 @@ mod tests {
                 "│ careful"
             ]
         );
+    }
+
+    #[test]
+    fn side_by_side_alerts_each_get_their_label_and_tabs_expand() {
+        assert_eq!(
+            laid_out("> [!NOTE]\n> a\n\n> [!WARNING]\n> b\n", 20),
+            vec!["│ Note", "│ a", "", "│ Warning", "│ b"]
+        );
+        assert_eq!(laid_out("a\tb `x\ty`\n", 20), vec!["a    b x    y"]);
     }
 
     #[test]

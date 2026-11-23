@@ -26,6 +26,10 @@ const CHEAT_SHEET_ID: &str = "help.keys";
 /// Identifies the config problems modal, so a reload replaces it.
 const CONFIG_PROBLEMS_ID: &str = "config.problems";
 
+/// Blocks longer than this many source lines sync by line share instead of
+/// wrapped rows, so a key never walks thousands of lines.
+const ROW_SHARE_LINES: usize = 512;
+
 /// How long to wait for the next key of an ambiguous sequence (Vim's `timeoutlen`).
 pub const DEFAULT_KEY_TIMEOUT: Duration = Duration::from_millis(1000);
 
@@ -148,9 +152,15 @@ impl App {
 
     /// The raw pane's number column and text width, in cells. The front end
     /// draws with these, so its rows break where scrolling counts them.
+    ///
+    /// While the raw pane is folded or off, the widths are those it will have
+    /// when it opens, so positions set meanwhile still fit it.
     fn raw_columns(&self) -> (usize, usize) {
-        let inner = self
-            .layout
+        let mut layout = self.layout.clone();
+        if layout.state(PaneId::Raw) != crate::layout::PaneState::Open {
+            layout.focus_pane(PaneId::Raw);
+        }
+        let inner = layout
             .geometry(self.screen.0)
             .into_iter()
             .find(|r| r.id == PaneId::Raw && !r.folded)
@@ -503,6 +513,7 @@ impl App {
                     self.scroll_raw(&action.name, times, count);
                     self.rendered_follow_raw();
                 }
+                self.sync_ends();
             }
             "rendered.jump" => {
                 // Show the top block's source at the top of the raw pane.
@@ -512,12 +523,13 @@ impl App {
                     .and_then(|d| d.model.line_of_block(self.rendered.top_block()))
                     .map(|l| l.saturating_sub(1));
                 if let Some(line) = line {
+                    // Open the raw pane first: its width sets the position.
+                    self.layout.focus_pane(PaneId::Raw);
                     let (_, width) = self.raw_columns();
                     let height = self.raw_height();
                     if let Some(doc) = self.doc.as_mut() {
                         doc.set_position(line, 0, width, height);
                     }
-                    self.layout.focus_pane(PaneId::Raw);
                 }
             }
             "line_numbers.toggle" => self.line_numbers = !self.line_numbers,
@@ -559,17 +571,41 @@ impl App {
         self.layout.modals_mut().open(sheet);
     }
 
-    /// Scrolls the raw pane by lines, half pages or pages, or to an end.
     /// The front end's layout of the rendered pane: each block's height in
     /// rows, for document `generation` at `width` cells. Call it when either
     /// changes (before drawing). A new document puts the rendered pane where
     /// the raw pane is.
     pub fn set_rendered_layout(&mut self, generation: u64, width: usize, heights: Vec<usize>) {
         let new_doc = self.rendered.generation != generation;
+        let resized = self.rendered.width != width;
         let height = self.raw_height();
         self.rendered.set_layout(generation, width, heights, height);
-        if new_doc {
+        // A new document starts where the raw pane is; a new width (a resize,
+        // a pane folded or opened) re-syncs from whichever pane has focus.
+        if new_doc || (resized && self.layout.focus() != PaneId::Rendered) {
             self.rendered_follow_raw();
+        } else if resized {
+            self.raw_follow_rendered();
+        }
+        self.sync_ends();
+    }
+
+    /// At the end of one reader pane, the other goes to its end too: the
+    /// rendered pane can be taller (table borders, rules) than its source.
+    fn sync_ends(&mut self) {
+        let height = self.raw_height();
+        let (_, width) = self.raw_columns();
+        let Some(doc) = self.doc.as_mut() else {
+            return;
+        };
+        let raw_end = doc.position() == doc.max_position(width, height);
+        if self.layout.focus() == PaneId::Rendered {
+            if self.rendered.at_end(height) {
+                let (line, row) = doc.max_position(width, height);
+                doc.set_position(line, row, width, height);
+            }
+        } else if raw_end && doc.line_count() > 1 {
+            self.rendered.to_end(height);
         }
     }
 
@@ -595,11 +631,18 @@ impl App {
         let source = doc.model.blocks[block].source;
         if source.contains(line) {
             let first = source.start - 1;
-            let into = (first..top).map(|i| doc.rows(i, width)).sum::<usize>() + row;
-            let total = (first..source.end)
-                .map(|i| doc.rows(i, width))
-                .sum::<usize>();
-            self.rendered.follow(block, into, total, height);
+            let lines = source.end - first;
+            if lines > ROW_SHARE_LINES {
+                // A huge block (a log read as one code block): share by
+                // lines, which costs the same however long it is.
+                self.rendered.follow(block, top - first, lines, height);
+            } else {
+                let into = (first..top).map(|i| doc.rows(i, width)).sum::<usize>() + row;
+                let total = (first..source.end)
+                    .map(|i| doc.rows(i, width))
+                    .sum::<usize>();
+                self.rendered.follow(block, into, total, height);
+            }
         } else {
             // Between blocks: the next block's top.
             self.rendered.follow(block, 0, 1, height);
@@ -619,6 +662,12 @@ impl App {
             return;
         };
         let (first, last) = (source.start - 1, source.end - 1);
+        if last - first + 1 > ROW_SHARE_LINES {
+            // A huge block: share by lines (see `rendered_follow_raw`).
+            let line = first + row * (last - first + 1) / rows.max(1);
+            doc.set_position(line, 0, width, height);
+            return;
+        }
         let total: usize = (first..=last).map(|i| doc.rows(i, width)).sum();
         let target = row * total / rows.max(1);
         let (mut line, mut before) = (first, 0);
@@ -656,6 +705,7 @@ impl App {
         }
     }
 
+    /// Scrolls the raw pane by lines, half pages or pages, or to an end.
     /// With a count, `gg` and `G` go to that line, as in Vim (`50G`).
     fn scroll_raw(&mut self, name: &str, times: u32, count: Option<u32>) {
         let height = self.raw_height().max(1);

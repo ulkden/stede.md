@@ -829,6 +829,69 @@ mod tests {
     }
 
     #[test]
+    fn g_takes_both_panes_to_their_ends() {
+        let mut app = App::new(AppOptions {
+            file: Some("/n/a.md".into()),
+            ..AppOptions::default()
+        });
+        // Ends with a table: taller rendered than raw.
+        let text = format!(
+            "{}| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n",
+            (1..=30).map(|i| format!("p{i}\n\n")).collect::<String>()
+        );
+        open_doc(&mut app, &text);
+        render(&mut app, 80, 10);
+        press(&mut app, "G");
+        let screen = render(&mut app, 80, 10);
+        assert!(
+            screen.contains("└"),
+            "the table's bottom border shows:\n{screen}"
+        );
+    }
+
+    #[test]
+    fn scrolling_rendered_with_raw_folded_keeps_raw_sane() {
+        let mut app = App::new(AppOptions {
+            file: Some("/n/a.md".into()),
+            ..AppOptions::default()
+        });
+        let long = (0..200)
+            .map(|i| format!("w{i}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        open_doc(&mut app, &format!("{long}\n\nend\n"));
+        render(&mut app, 80, 10);
+        press(&mut app, "<C-l><leader>z");
+        render(&mut app, 80, 10);
+        press(&mut app, "10j");
+        render(&mut app, 80, 10);
+        press(&mut app, "<leader>z<C-h>");
+        let screen = render(&mut app, 80, 10);
+        // The raw pane shows text, not an empty pane scrolled past its line.
+        let raw_rows: Vec<&str> = screen.lines().skip(1).take(3).collect();
+        assert!(raw_rows.iter().any(|r| r.contains('w')), "{screen}");
+    }
+
+    #[test]
+    fn a_huge_block_syncs_by_lines() {
+        let mut app = App::new(AppOptions {
+            file: Some("/n/a.md".into()),
+            ..AppOptions::default()
+        });
+        let code = (1..=2000)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        open_doc(&mut app, &format!("```\n{code}\n```\n"));
+        render(&mut app, 80, 12);
+        press(&mut app, "1000j");
+        render(&mut app, 80, 12);
+        let (block, row) = app.view().rendered.position;
+        assert_eq!(block, 0);
+        assert!((990..=1010).contains(&row), "row {row}");
+    }
+
+    #[test]
     fn tiny_terminals_do_not_panic() {
         let mut app = App::new(AppOptions::default());
         // Draw only: TestBackend itself can't format a zero-width screen.

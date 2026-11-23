@@ -104,7 +104,8 @@ impl Builder {
         for c in self.containers.iter_mut() {
             match c {
                 Container::ListItem { continuation, .. }
-                | Container::Footnote { continuation, .. } => *continuation = true,
+                | Container::Footnote { continuation, .. }
+                | Container::Alert { continuation, .. } => *continuation = true,
                 _ => {}
             }
         }
@@ -156,6 +157,7 @@ impl Builder {
                 Container::Alert {
                     kind: alert_kind(alert.alert_type),
                     title: alert.title.clone(),
+                    continuation: false,
                 },
             )),
             NodeValue::List(list) => {

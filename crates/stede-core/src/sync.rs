@@ -12,6 +12,8 @@
 pub struct Rendered {
     /// Rows each block takes, for the document `generation` at `width`.
     heights: Vec<usize>,
+    /// Whether any layout has been reported (an empty document has none to report).
+    laid_out: bool,
     pub generation: u64,
     pub width: usize,
     block: usize,
@@ -21,7 +23,7 @@ pub struct Rendered {
 impl Rendered {
     /// Whether a layout has been reported for this document and width.
     pub fn is_current(&self, generation: u64, width: usize) -> bool {
-        self.generation == generation && self.width == width && !self.heights.is_empty()
+        self.laid_out && self.generation == generation && self.width == width
     }
 
     /// A new layout. The place is kept (clamped); the caller syncs it after a
@@ -36,6 +38,7 @@ impl Rendered {
         self.generation = generation;
         self.width = width;
         self.heights = heights;
+        self.laid_out = true;
         self.clamp(height);
     }
 
@@ -75,6 +78,11 @@ impl Rendered {
     pub fn set_position(&mut self, block: usize, row: usize, height: usize) {
         (self.block, self.row) = (block, row);
         self.clamp(height);
+    }
+
+    /// Whether it shows the last full page.
+    pub fn at_end(&self, height: usize) -> bool {
+        !self.heights.is_empty() && self.position() == self.max_position(height)
     }
 
     /// Goes to the end: the last full page.
