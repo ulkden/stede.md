@@ -1,0 +1,36 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/stede-core",
+    "crates/stede-markdown",
+    "crates/stede-services",
+    "crates/stede-tui",
+    "crates/stede-gui",
+    "crates/stede-plugin",
+]
+# The phase 3 and phase 4 crates are placeholders; build the rest by default.
+default-members = [
+    "crates/stede-core",
+    "crates/stede-markdown",
+    "crates/stede-services",
+    "crates/stede-tui",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/ulkden/stede.md"
+rust-version = "1.85"
+publish = false
+
+[workspace.dependencies]
+stede-core = { path = "crates/stede-core" }
+stede-markdown = { path = "crates/stede-markdown" }
+stede-services = { path = "crates/stede-services" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }

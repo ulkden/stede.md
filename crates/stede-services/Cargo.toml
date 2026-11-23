@@ -1,0 +1,15 @@
+[package]
+name = "stede-services"
+description = "STEDE.md background services: file tree and watcher, linter hub, external commands."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+stede-core.workspace = true
+
+[lints]
+workspace = true

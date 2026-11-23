@@ -1,0 +1,21 @@
+[package]
+name = "stede-tui"
+description = "STEDE.md terminal front end (ratatui + crossterm). Builds the `stede` binary."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "stede"
+path = "src/main.rs"
+
+[dependencies]
+stede-core.workspace = true
+stede-markdown.workspace = true
+stede-services.workspace = true
+
+[lints]
+workspace = true

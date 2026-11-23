@@ -1,0 +1,6 @@
+/target
+**/*.rs.bk
+*.pending-snap
+*.snap.new
+.stede/local.toml
+.stede/state/
