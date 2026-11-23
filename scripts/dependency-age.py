@@ -37,6 +37,7 @@ if sys.version_info < (3, 11):
 
 import argparse
 import datetime as dt
+import functools
 import json
 import os
 import re
@@ -318,15 +319,94 @@ def parse_time(s: str) -> dt.datetime:
 _last_crates_io = 0.0
 
 
-def crate_published(name: str, version: str) -> dt.datetime:
-    # crates.io asks for at most one request per second.
+@functools.cache
+def crates_io(path: str) -> dict:
+    """GET a crates.io API path, at most once per run and once per second."""
     global _last_crates_io
     wait = 1.0 - (time.monotonic() - _last_crates_io)
     if wait > 0:
         time.sleep(wait)
     _last_crates_io = time.monotonic()
-    data = json.loads(fetch(f"https://crates.io/api/v1/crates/{name}/{version}"))
-    return parse_time(data["version"]["created_at"])
+    return json.loads(fetch(f"https://crates.io/api/v1/crates/{path}"))
+
+
+def crate_published(name: str, version: str) -> dt.datetime:
+    return parse_time(crates_io(f"{name}/{version}")["version"]["created_at"])
+
+
+# --- --fix: settle too-new crates on the newest eligible release ---------------
+
+
+def compatible(current: str, candidate: str) -> bool:
+    """Whether `candidate` is in Cargo's semver-compatible range of `current`."""
+    a, b = parse_version(current), parse_version(candidate)
+    if not a or not b:
+        return False
+    if a[0] > 0:
+        return a[0] == b[0]
+    if a[1] > 0:
+        return b[0] == 0 and a[1] == b[1]
+    return a[:3] == b[:3]
+
+
+def eligible_version(name: str, current: str, cutoff: dt.datetime) -> str | None:
+    """The newest release of `name` that is old enough, not yanked, not a
+    pre-release, semver-compatible with `current`, and not newer than it."""
+    versions = crates_io(f"{name}/versions?per_page=100")["versions"]
+    best = None
+    for v in versions:
+        num = v["num"]
+        parsed = parse_version(num)
+        if (
+            v["yanked"]
+            or not parsed
+            or parsed[3].startswith("-")
+            or not compatible(current, num)
+            or version_key(num) > version_key(current)
+            or parse_time(v["created_at"]) > cutoff
+        ):
+            continue
+        if best is None or version_key(num) > version_key(best):
+            best = num
+    return best
+
+
+def settle(base: str, min_days: int, now: dt.datetime, rounds: int = 5) -> int:
+    """Pins each too-new crate in Cargo.lock to its newest eligible release
+    with `cargo update --precise`, repeating while that changes the graph."""
+    cutoff = now - dt.timedelta(days=min_days)
+    stuck: dict[str, str] = {}
+    for _ in range(rounds):
+        # A crate stuck behind a sibling's exact pin (pest behind pest_derive,
+        # say) can settle once the sibling moves, so retry every round.
+        stuck = {}
+        changed = False
+        for change in crate_changes(base):
+            if change.old and is_patch_bump(change.old, change.new):
+                continue
+            key = f"{change.name}@{change.new}"
+            if crate_published(change.name, change.new) <= cutoff:
+                continue
+            target = eligible_version(change.name, change.new, cutoff)
+            if target is None:
+                stuck[key] = "no compatible release is old enough"
+                continue
+            run = subprocess.run(
+                ["cargo", "update", "-p", key, "--precise", target],
+                capture_output=True,
+                text=True,
+            )
+            if run.returncode != 0:
+                reason = run.stderr.strip().splitlines()
+                stuck[key] = reason[-1] if reason else "cargo update failed"
+                continue
+            print(f"pinned {key} -> {target}", flush=True)
+            changed = True
+        if not changed:
+            break
+    for key, reason in stuck.items():
+        print(f"stuck: {key}: {reason}", flush=True)
+    return 1 if stuck else 0
 
 
 def toolchain_published(version: str) -> dt.datetime:
@@ -401,6 +481,11 @@ def main() -> int:
     ap.add_argument("--base", help="revision to compare with (default: merge-base with origin/main)")
     ap.add_argument("--min-days", type=int, default=14)
     ap.add_argument("--exempt", action="store_true", help="report failures without failing")
+    ap.add_argument(
+        "--fix",
+        action="store_true",
+        help="pin too-new crates in Cargo.lock to their newest eligible release, then check",
+    )
     args = ap.parse_args()
 
     # Paths below are relative to the repo root, whatever the current directory.
@@ -414,6 +499,8 @@ def main() -> int:
             sys.exit("error: no merge-base with origin/main; run `git fetch origin` or pass --base")
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
     now = dt.datetime.now(dt.UTC)
+    if args.fix and settle(base, args.min_days, now):
+        print("note: some crates couldn't be settled; see `stuck:` above", file=sys.stderr)
 
     changes = crate_changes(base) + tool_changes(base)
     tc, tc_problems = toolchain_changes(base)

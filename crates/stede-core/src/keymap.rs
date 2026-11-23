@@ -345,6 +345,10 @@ const DEFAULT_BINDINGS: &[(Mode, Scope, &str, &str)] = &[
     (Normal, Global, "<leader>o", "modal.reopen_last"),
     (Normal, Modal, "<Esc>", "modal.close"),
     (Normal, Modal, "<C-c>", "modal.close_all"),
+    (Normal, Modal, "j", "modal.scroll_down"),
+    (Normal, Modal, "<Down>", "modal.scroll_down"),
+    (Normal, Modal, "k", "modal.scroll_up"),
+    (Normal, Modal, "<Up>", "modal.scroll_up"),
     (Normal, Modal, "<leader>?", "help.keys"),
     (Normal, Modal, "<F1>", "help.keys"),
 ];

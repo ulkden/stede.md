@@ -194,6 +194,8 @@ const BUILTINS: &[(&str, &str)] = &[
     ("modal.close", "Close the top modal"),
     ("modal.close_all", "Close every open modal"),
     ("modal.reopen_last", "Reopen the last output modal"),
+    ("modal.scroll_down", "Scroll the top modal down"),
+    ("modal.scroll_up", "Scroll the top modal up"),
     (
         "pane.focus_left",
         "Move focus to the pane on the left, opening it if folded",

@@ -27,6 +27,7 @@ just install-hooks                   # optional: fmt and spell check before each
 | `just layers` | Fail if `stede-core`, `stede-markdown` or `stede-services` depends on a UI crate |
 | `just msrv` | Build on the minimum supported Rust version (`rust-version` in `Cargo.toml`) |
 | `just dep-age` | Check that every dependency version new since `origin/main` is 14+ days old. Run it when you change dependencies |
+| `just dep-settle` | Pin too-new crates in `Cargo.lock` to their newest release that is 14+ days old |
 
 CI (`.github/workflows/ci.yml`) runs the same recipes on Linux and macOS, with the same tool versions and MSRV, all read from the `justfile` and `Cargo.toml`. A separate daily job (`audit.yml`) checks the committed `Cargo.lock` against the RustSec advisory database.
 
@@ -66,6 +67,8 @@ A version passes if it is 14+ days old. Crates, the toolchain and dev tools also
 - an action tag with no GitHub release (commit dates can be backdated, so they don't prove age)
 
 The check matters most for the toolchain, where Dependabot can't apply its cooldown because the registry gives no publish date.
+
+When you add or update crates, run `just dep-settle`. It pins every too-new crate in `Cargo.lock` to its newest release that is 14+ days old and semver-compatible, then runs the check. A crate it can't settle is listed as `stuck`, usually because something requires that exact version; wait for the eligible date or pick an older version of what pulls it in.
 
 A PR that is too new fails until its eligible date, which the check prints. Re-run the job after that date. For a security fix that isn't a patch bump, add the `dependency-age-exempt` label and say why in the PR. The label waives only "too new"; pinning problems still fail. Run it locally with `just dep-age`, which needs Python 3.11+ and network access.
 

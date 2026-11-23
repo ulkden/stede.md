@@ -21,13 +21,16 @@ version = "0.0.1"
 edition = "2024"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/ulkden/stede.md"
-rust-version = "1.85"
+rust-version = "1.88"
 publish = false
 
 [workspace.dependencies]
 stede-core = { path = "crates/stede-core" }
 stede-markdown = { path = "crates/stede-markdown" }
 stede-services = { path = "crates/stede-services" }
+# Third-party crates: one place, full versions (see CONTRIBUTING.md, Dependencies).
+insta = "1.49.0"
+ratatui = "0.30.2"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

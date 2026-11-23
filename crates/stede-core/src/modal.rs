@@ -68,6 +68,24 @@ impl Modal {
         }
     }
 
+    /// How many lines the body takes when drawn: a table is its header line,
+    /// then each section's title line followed by its rows. Front ends draw
+    /// tables in exactly this shape, so scrolling agrees with what is shown.
+    pub fn line_count(&self) -> usize {
+        match &self.body {
+            ModalBody::Text(lines) => lines.len(),
+            ModalBody::Table { sections, .. } => {
+                1 + sections.iter().map(|s| 1 + s.rows.len()).sum::<usize>()
+            }
+        }
+    }
+
+    /// Scrolls by `delta` lines, staying within the content.
+    pub fn scroll_by(&mut self, delta: isize) {
+        let max = self.line_count().saturating_sub(1);
+        self.scroll = self.scroll.saturating_add_signed(delta).min(max);
+    }
+
     /// Sets the modal's identity.
     pub fn with_id(mut self, id: &'static str) -> Self {
         self.id = Some(id);
@@ -181,6 +199,40 @@ mod tests {
 
     fn out(title: &str) -> Modal {
         Modal::output(title, ModalBody::Text(vec![title.to_owned()]))
+    }
+
+    #[test]
+    fn line_count_and_scroll() {
+        let mut m = Modal::output(
+            "t",
+            ModalBody::Table {
+                headers: vec!["a".into()],
+                sections: vec![
+                    Section {
+                        title: "s1".into(),
+                        rows: vec![
+                            Row {
+                                cells: vec!["x".into()]
+                            };
+                            2
+                        ],
+                    },
+                    Section {
+                        title: "s2".into(),
+                        rows: vec![Row {
+                            cells: vec!["y".into()],
+                        }],
+                    },
+                ],
+            },
+        );
+        assert_eq!(m.line_count(), 1 + 3 + 2);
+        m.scroll_by(-3);
+        assert_eq!(m.scroll, 0);
+        m.scroll_by(100);
+        assert_eq!(m.scroll, 5);
+        m.scroll_by(-2);
+        assert_eq!(m.scroll, 3);
     }
 
     #[test]

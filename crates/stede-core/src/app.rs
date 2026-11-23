@@ -176,6 +176,16 @@ impl App {
                     return Err("no output to reopen".into());
                 }
             }
+            "modal.scroll_down" | "modal.scroll_up" => {
+                let sign = if action.name == "modal.scroll_down" {
+                    1
+                } else {
+                    -1
+                };
+                if let Some(top) = self.layout.modals_mut().top_mut() {
+                    top.scroll_by(sign * times as isize);
+                }
+            }
             "pane.focus_left" | "pane.focus_right" => {
                 let step = if action.name == "pane.focus_left" {
                     -1
