@@ -50,6 +50,9 @@ struct Shared {
     /// Folders being listed, and whether another listing was asked for
     /// meanwhile. One listing per folder at a time keeps results in order.
     inflight: Mutex<HashMap<PathBuf, bool>>,
+    /// Files being opened, and the flavor of a request that came in during
+    /// the read (`Some`): the file is read again with the newest flavor.
+    opening: Mutex<HashMap<PathBuf, Option<Option<String>>>>,
 }
 
 /// File watchers, made on first use.
@@ -83,6 +86,7 @@ impl Services {
             }),
             config_files: Mutex::new(Vec::new()),
             inflight: Mutex::new(HashMap::new()),
+            opening: Mutex::new(HashMap::new()),
         });
         {
             // A long-running blocking task: the debouncer waits on a channel.
@@ -123,30 +127,31 @@ impl Services {
             }
             Request::OpenFile { path, flavor } => {
                 // One open per file at a time, like listings, so the newest
-                // read is the one reported last.
-                let key = PathBuf::from("\0open").join(&path);
+                // read is the one reported last, with the newest flavor.
                 {
-                    let mut inflight = self.shared.inflight.lock().expect("inflight lock");
-                    if let Some(again) = inflight.get_mut(&key) {
-                        *again = true;
+                    let mut opening = self.shared.opening.lock().expect("opening lock");
+                    if let Some(again) = opening.get_mut(&path) {
+                        *again = Some(flavor);
                         return;
                     }
-                    inflight.insert(key.clone(), false);
+                    opening.insert(path.clone(), None);
                 }
                 let shared = Arc::clone(&self.shared);
                 self.runtime().spawn_blocking(move || {
+                    let mut flavor = flavor;
                     loop {
                         let result = open_file(&path, flavor.as_deref());
                         (shared.sink)(ServiceEvent::Opened {
                             path: path.clone(),
                             result,
                         });
-                        let mut inflight = shared.inflight.lock().expect("inflight lock");
-                        if inflight.get(&key) == Some(&true) {
-                            inflight.insert(key.clone(), false);
-                        } else {
-                            inflight.remove(&key);
-                            return;
+                        let mut opening = shared.opening.lock().expect("opening lock");
+                        match opening.get_mut(&path).and_then(Option::take) {
+                            Some(newer) => flavor = newer,
+                            None => {
+                                opening.remove(&path);
+                                return;
+                            }
                         }
                     }
                 });

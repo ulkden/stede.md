@@ -247,9 +247,12 @@ pub(crate) fn wrap(line: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
     let mut rows = vec![String::new()];
     let mut col = 0;
+    // The column in the whole line, which tab stops count from (rows wrap).
+    let mut line_col = 0;
     for c in line.chars() {
         if c == '\t' {
-            let spaces = TAB_STOP - col % TAB_STOP;
+            let spaces = TAB_STOP - line_col % TAB_STOP;
+            line_col += spaces;
             for _ in 0..spaces {
                 if col == width {
                     rows.push(String::new());
@@ -269,6 +272,7 @@ pub(crate) fn wrap(line: &str, width: usize) -> Vec<String> {
         }
         rows.last_mut().expect("a row").push(shown);
         col += w;
+        line_col += w;
     }
     rows
 }
@@ -695,6 +699,8 @@ mod tests {
         assert_eq!(wrap("ab日本", 3), vec!["ab", "日", "本"]);
         assert_eq!(wrap("\tx", 8), vec!["    x"]);
         assert_eq!(wrap("a\u{7}b", 8), vec!["a\u{FFFD}b"]);
+        // Tab stops count from the start of the line, not of the row.
+        assert_eq!(wrap("abcdefg\tx", 6), vec!["abcdef", "g x"]);
     }
 
     #[test]

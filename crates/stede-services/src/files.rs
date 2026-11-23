@@ -19,6 +19,12 @@ const MARKDOWN: &[&str] = &["md", "markdown", "mdown", "mkd", "mkdn", "mdx", "md
 /// an unknown name); other text files become a single code block, labeled
 /// by their extension. Binary files and very large ones are refused.
 pub fn open_file(path: &Path, flavor: Option<&str>) -> Result<Document, String> {
+    // Only regular files: opening a named pipe would block until a writer
+    // came, and a device could stream forever. (Links are followed.)
+    let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
+    if !meta.is_file() {
+        return Err("not a regular file".into());
+    }
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let size = file.metadata().map_err(|e| e.to_string())?.len();
     if size > MAX_FILE_BYTES {
@@ -32,6 +38,13 @@ pub fn open_file(path: &Path, flavor: Option<&str>) -> Result<Document, String> 
     file.take(MAX_FILE_BYTES + 1)
         .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;
+    // It may have grown since its size was read.
+    if bytes.len() as u64 > MAX_FILE_BYTES {
+        return Err(format!(
+            "too large to open (over {} MiB)",
+            MAX_FILE_BYTES / (1024 * 1024)
+        ));
+    }
     // A NUL near the start is the usual sign of a binary file.
     if bytes.iter().take(8192).any(|&b| b == 0) {
         return Err("it looks like a binary file".into());
@@ -178,6 +191,15 @@ mod tests {
                 .contains("binary")
         );
         assert!(open_file(&dir.join("none.md"), None).is_err());
+        assert_eq!(open_file(&dir, None).unwrap_err(), "not a regular file");
+        #[cfg(unix)]
+        {
+            let fifo = dir.join("pipe.md");
+            let made = std::process::Command::new("mkfifo").arg(&fifo).status();
+            if made.is_ok_and(|s| s.success()) {
+                assert_eq!(open_file(&fifo, None).unwrap_err(), "not a regular file");
+            }
+        }
         // A CommonMark flavor turns tables off.
         std::fs::write(dir.join("t.md"), "| a |\n|---|\n| b |\n").unwrap();
         let gfm = open_file(&dir.join("t.md"), None).unwrap();

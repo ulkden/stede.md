@@ -83,6 +83,9 @@ pub struct App {
     /// The Markdown flavor from config, passed with each open.
     flavor: Option<String>,
     line_numbers: bool,
+    /// The line-numbers setting config last gave, so a reload that didn't
+    /// change it keeps the session's `<leader>n` choice.
+    config_line_numbers: Option<bool>,
 }
 
 impl App {
@@ -111,6 +114,7 @@ impl App {
             loads: 0,
             flavor: None,
             line_numbers: true,
+            config_line_numbers: None,
         };
         if let Some(root) = options.root {
             let (tree, first) = Tree::new(root, options.file);
@@ -149,8 +153,20 @@ impl App {
         self.resolver.reset();
         self.key_timeout = config.key_timeout;
         self.layout.set_tree_side(config.tree_side);
-        self.line_numbers = config.line_numbers;
-        self.flavor = config.flavor.as_ref().map(|(name, _)| name.clone());
+        if self.config_line_numbers != Some(config.line_numbers) {
+            self.line_numbers = config.line_numbers;
+            self.config_line_numbers = Some(config.line_numbers);
+        }
+        let flavor = config.flavor.as_ref().map(|(name, _)| name.clone());
+        let flavor_changed = flavor != self.flavor;
+        self.flavor = flavor;
+        // A new flavor parses the open file differently: read it again.
+        if flavor_changed
+            && let Some(file) = self.current_file.clone()
+            && self.doc.is_some()
+        {
+            self.request_open(file);
+        }
         self.config_problems = None;
         // A reload replaces the problems shown, or clears them once fixed.
         self.layout.modals_mut().remove(CONFIG_PROBLEMS_ID);
@@ -450,7 +466,9 @@ impl App {
             }
             "tree.open" => self.tree_open()?,
             "view.down" | "view.up" | "view.half_down" | "view.half_up" | "view.page_down"
-            | "view.page_up" | "view.top" | "view.bottom" => self.scroll_raw(&action.name, times),
+            | "view.page_up" | "view.top" | "view.bottom" => {
+                self.scroll_raw(&action.name, times, count)
+            }
             "line_numbers.toggle" => self.line_numbers = !self.line_numbers,
             "tree.close" => {
                 let rows = self.tree.rows();
@@ -491,7 +509,8 @@ impl App {
     }
 
     /// Scrolls the raw pane by lines, half pages or pages, or to an end.
-    fn scroll_raw(&mut self, name: &str, times: u32) {
+    /// With a count, `gg` and `G` go to that line, as in Vim (`50G`).
+    fn scroll_raw(&mut self, name: &str, times: u32, count: Option<u32>) {
         let height = self.raw_height().max(1);
         let Some(doc) = self.doc.as_mut() else {
             return;
@@ -505,6 +524,7 @@ impl App {
             "view.half_up" => top.saturating_sub(n * (height / 2).max(1)),
             "view.page_down" => top.saturating_add(n * height),
             "view.page_up" => top.saturating_sub(n * height),
+            "view.top" | "view.bottom" if count.is_some() => n.saturating_sub(1),
             "view.top" => 0,
             _ => usize::MAX,
         };
@@ -524,10 +544,19 @@ impl App {
             } else if let Some(dir) = self.tree.expand(&row.path) {
                 self.outbox.push(Request::ListDir(dir));
             }
-        } else if self.current_file.as_ref() != Some(&row.path) {
-            self.current_file = Some(row.path.clone());
-            self.doc_error = None;
-            self.request_open(row.path.clone());
+        } else {
+            let showing = self.doc.as_ref().is_some_and(|d| d.path == row.path);
+            // Open it unless it's already showing; after a failed open,
+            // Enter tries again.
+            if !showing || self.doc_error.is_some() {
+                if !showing {
+                    // Don't leave the last file up under the new one's name.
+                    self.doc = None;
+                }
+                self.current_file = Some(row.path.clone());
+                self.doc_error = None;
+                self.request_open(row.path.clone());
+            }
         }
         self.rescroll_tree();
         Ok(())
@@ -1148,6 +1177,89 @@ mod tests {
         assert_eq!(
             app.view().status.message.as_deref(),
             Some("couldn't reload a.md: gone")
+        );
+    }
+
+    #[test]
+    fn counts_on_g_and_gg_go_to_that_line() {
+        let mut app = App::new(AppOptions {
+            file: Some("/p/a.md".into()),
+            ..AppOptions::default()
+        });
+        let text: String = (1..=100).map(|i| format!("{i}\n")).collect();
+        opened(&mut app, "/p/a.md", &text);
+        press(&mut app, "50G");
+        assert_eq!(app.view().raw.lines[0].0, 50);
+        press(&mut app, "10gg");
+        assert_eq!(app.view().raw.lines[0].0, 10);
+    }
+
+    #[test]
+    fn a_reload_keeps_the_session_line_numbers_choice() {
+        use crate::config::{Config, Layer};
+        let mut app = App::new(AppOptions::default());
+        press(&mut app, "<leader>n");
+        let (config, errors) = Config::from_layers(&[Layer {
+            path: "c.toml".into(),
+            text: "[ui]\ntree_side = \"left\"\n".into(),
+        }]);
+        app.apply_config(&config, &errors);
+        assert!(
+            !app.view().raw.line_numbers,
+            "unrelated reload keeps it off"
+        );
+        let (config, errors) = Config::from_layers(&[Layer {
+            path: "c.toml".into(),
+            text: "[editor.line_numbers]\nmode = \"off\"\n".into(),
+        }]);
+        app.apply_config(&config, &errors);
+        let (config, errors) = Config::from_layers(&[]);
+        app.apply_config(&config, &errors);
+        assert!(
+            app.view().raw.line_numbers,
+            "the setting itself changed back to on"
+        );
+    }
+
+    #[test]
+    fn a_flavor_change_reparses_the_open_file() {
+        use crate::config::{Config, Layer};
+        let mut app = App::new(AppOptions {
+            file: Some("/p/a.md".into()),
+            ..AppOptions::default()
+        });
+        opened(&mut app, "/p/a.md", "x");
+        app.take_requests();
+        let (config, errors) = Config::from_layers(&[Layer {
+            path: "c.toml".into(),
+            text: "[markdown]\nflavor = \"commonmark\"\n".into(),
+        }]);
+        app.apply_config(&config, &errors);
+        assert_eq!(
+            app.take_requests(),
+            vec![Request::OpenFile {
+                path: "/p/a.md".into(),
+                flavor: Some("commonmark".into())
+            }]
+        );
+    }
+
+    #[test]
+    fn enter_retries_a_failed_open_and_switching_shows_loading() {
+        let mut app = tree_app();
+        press(&mut app, "j<CR>");
+        app.take_requests();
+        app.handle_event(ServiceEvent::Opened {
+            path: "/p/a.md".into(),
+            result: Err("EIO".into()),
+        });
+        press(&mut app, "<CR>");
+        assert_eq!(app.take_requests().len(), 1, "Enter tries again");
+        opened(&mut app, "/p/a.md", "text");
+        press(&mut app, "<CR>");
+        assert!(
+            app.take_requests().is_empty(),
+            "already showing: nothing to do"
         );
     }
 
