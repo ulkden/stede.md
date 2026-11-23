@@ -3,7 +3,7 @@ source: crates/stede-tui/src/ui.rs
 expression: "render(&mut app, 70, 8)"
 ---
 "┌ Raw ─────────────────────┐┌ Rendered ────────────────┐┌ Files: note┐"
-"│                          ││                          ││▾ drafts/   │"
+"│No file open: pick one in ││                          ││▾ drafts/   │"
 "│                          ││                          ││    idea.md │"
 "│                          ││                          ││  日本語.md │" Hidden by multi-width symbols: [(60, " "), (62, " "), (64, " ")]
 "│                          ││                          ││  todo.md   │"

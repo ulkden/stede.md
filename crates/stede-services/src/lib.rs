@@ -10,7 +10,7 @@
 
 mod files;
 
-pub use files::list_dir;
+pub use files::{MAX_FILE_BYTES, list_dir, open_file};
 
 use std::collections::HashMap;
 use std::io;
@@ -50,6 +50,9 @@ struct Shared {
     /// Folders being listed, and whether another listing was asked for
     /// meanwhile. One listing per folder at a time keeps results in order.
     inflight: Mutex<HashMap<PathBuf, bool>>,
+    /// Files being opened, and the flavor of a request that came in during
+    /// the read (`Some`): the file is read again with the newest flavor.
+    opening: Mutex<HashMap<PathBuf, Option<Option<String>>>>,
 }
 
 /// File watchers, made on first use.
@@ -83,6 +86,7 @@ impl Services {
             }),
             config_files: Mutex::new(Vec::new()),
             inflight: Mutex::new(HashMap::new()),
+            opening: Mutex::new(HashMap::new()),
         });
         {
             // A long-running blocking task: the debouncer waits on a channel.
@@ -121,8 +125,37 @@ impl Services {
                 self.runtime()
                     .spawn_blocking(move || shared.unwatch_dir(&dir));
             }
-            // Loading files into the panes comes with the reader panes.
-            Request::OpenFile(_) => {}
+            Request::OpenFile { path, flavor } => {
+                // One open per file at a time, like listings, so the newest
+                // read is the one reported last, with the newest flavor.
+                {
+                    let mut opening = self.shared.opening.lock().expect("opening lock");
+                    if let Some(again) = opening.get_mut(&path) {
+                        *again = Some(flavor);
+                        return;
+                    }
+                    opening.insert(path.clone(), None);
+                }
+                let shared = Arc::clone(&self.shared);
+                self.runtime().spawn_blocking(move || {
+                    let mut flavor = flavor;
+                    loop {
+                        let result = guarded(|| open_file(&path, flavor.as_deref()));
+                        (shared.sink)(ServiceEvent::Opened {
+                            path: path.clone(),
+                            result,
+                        });
+                        let mut opening = shared.opening.lock().expect("opening lock");
+                        match opening.get_mut(&path).and_then(Option::take) {
+                            Some(newer) => flavor = newer,
+                            None => {
+                                opening.remove(&path);
+                                return;
+                            }
+                        }
+                    }
+                });
+            }
         }
     }
 
@@ -163,7 +196,7 @@ impl Shared {
             // Watch first, so a change during the listing isn't missed; and
             // every time, so a folder deleted and made again is watched again.
             self.watch_dir(&dir);
-            let result = list_dir(&dir);
+            let result = guarded(|| list_dir(&dir));
             (self.sink)(ServiceEvent::Listed {
                 dir: dir.clone(),
                 result,
@@ -247,6 +280,14 @@ impl Shared {
         names.extend(mapped.into_iter().map(|(_, p)| p));
         names
     }
+}
+
+/// Runs a read, turning a panic (a parser bug on odd input, say) into an
+/// error, so its in-flight entry is cleared and the path can be tried again.
+fn guarded<T>(read: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(read)).unwrap_or_else(|_| {
+        Err("an internal error stopped the read (a bug; please report it)".into())
+    })
 }
 
 /// Collects raw watcher events and reports them in batches: the paths that
@@ -472,18 +513,29 @@ mod tests {
     fn listing_a_folder_is_not_a_change() {
         let dir = temp("quiet");
         std::fs::write(dir.join("a.md"), "a").unwrap();
+        // FSEvents (macOS) has latency and can still deliver the write above
+        // after watching starts; let it settle first.
+        std::thread::sleep(Duration::from_millis(1000));
         let (sink, rx) = collecting();
         let services = Services::start(sink).unwrap();
         for _ in 0..3 {
             services.handle(Request::ListDir(dir.clone()));
             std::thread::sleep(Duration::from_millis(100));
         }
-        // Listings come back, but reading the folder reports no change.
-        let mut changed = false;
+        // The regression: reading the folder (an access) reported it changed,
+        // so every listing asked for another. Opening a file in it mustn't
+        // either (that would reload it forever).
+        services.handle(Request::OpenFile {
+            path: dir.join("a.md"),
+            flavor: None,
+        });
+        let mut changed = Vec::new();
         while let Ok(e) = rx.recv_timeout(Duration::from_millis(600)) {
-            changed |= matches!(e, ServiceEvent::Changed(_));
+            if let ServiceEvent::Changed(paths) = e {
+                changed.extend(paths.into_iter().filter(|p| p.starts_with(&dir)));
+            }
         }
-        assert!(!changed, "listing a folder must not report it changed");
+        assert!(changed.is_empty(), "reads reported as changes: {changed:?}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -504,6 +556,12 @@ mod tests {
             Ok(ServiceEvent::Changed(_))
         ));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_panicking_read_is_an_error_not_a_stuck_path() {
+        let result: Result<(), String> = guarded(|| panic!("boom"));
+        assert!(result.unwrap_err().contains("internal error"));
     }
 
     #[test]

@@ -8,7 +8,9 @@
 
 mod convert;
 mod flavor;
-pub mod model;
+
+/// The render model's types, which live in the core (every crate shares them).
+pub use stede_core::render as model;
 
 pub use convert::{MAX_CONTAINERS, comrak_options, line_count, render};
 pub use flavor::Flavor;

@@ -9,11 +9,14 @@
 pub mod action;
 pub mod app;
 pub mod config;
+pub mod doc;
 pub mod io;
 pub mod key;
 pub mod keymap;
 pub mod layout;
 pub mod modal;
+pub mod render;
+pub mod text;
 pub mod theme;
 pub mod tree;
 pub mod view;

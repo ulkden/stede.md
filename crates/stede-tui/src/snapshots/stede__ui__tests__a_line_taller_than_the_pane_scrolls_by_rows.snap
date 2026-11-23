@@ -1,0 +1,11 @@
+---
+source: crates/stede-tui/src/ui.rs
+expression: "render(&mut app, 40, 7)"
+---
+"┌ Raw: a.md ───┐┌ Rendered ────┐┌ Files┐"
+"│  w09 w10 w11 ││              ││      │"
+"│  w12 w13 w14 ││              ││      │"
+"│  w15 w16 w17 ││              ││      │"
+"│  w18 w19 w20 ││              ││      │"
+"└──────────────┘└──────────────┘└──────┘"
+" NORMAL   /n/a.md                       "

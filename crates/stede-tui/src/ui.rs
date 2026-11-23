@@ -10,9 +10,11 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
+use stede_core::doc::LineKind;
 use stede_core::layout::PaneId;
 use stede_core::modal::{self, Modal, ModalBody};
-use stede_core::view::{PaneView, STATUS_ROWS, TreeView, View};
+use stede_core::text::wrap_rows;
+use stede_core::view::{PaneView, RawView, STATUS_ROWS, TreeView, View};
 
 /// The shell's colors, taken from the core's theme slots.
 #[derive(Clone, Copy, Debug)]
@@ -24,6 +26,12 @@ pub struct Theme {
     pub status_fg: Color,
     pub status_bg: Color,
     pub dim: Color,
+    pub linenr: Color,
+    pub heading: Color,
+    pub code: Color,
+    pub quote: Color,
+    pub rule: Color,
+    pub meta: Color,
 }
 
 impl Default for Theme {
@@ -80,6 +88,12 @@ impl Theme {
             status_fg: get("ui.status.fg"),
             status_bg: get("ui.status.bg"),
             dim: get("ui.dim"),
+            linenr: get("ui.linenr"),
+            heading: get("md.heading"),
+            code: get("md.code"),
+            quote: get("md.quote"),
+            rule: get("md.rule"),
+            meta: get("md.meta"),
         }
     }
 }
@@ -206,9 +220,10 @@ fn draw_pane(frame: &mut Frame, area: Rect, pane: &PaneView, view: &View, theme:
     } else {
         Style::new()
     };
-    // The tree's title names its folder: " Files: notes ".
-    let title = match (pane.id, &view.tree.root) {
-        (PaneId::Tree, Some(root)) => format!(" {}: {root} ", pane.title),
+    // The tree's title names its folder, the raw pane its file.
+    let title = match (pane.id, &view.tree.root, &view.raw.title) {
+        (PaneId::Tree, Some(root), _) => format!(" {}: {root} ", pane.title),
+        (PaneId::Raw, _, Some(file)) => format!(" {}: {file} ", pane.title),
         _ => format!(" {} ", pane.title),
     };
     let block = Block::bordered()
@@ -216,15 +231,76 @@ fn draw_pane(frame: &mut Frame, area: Rect, pane: &PaneView, view: &View, theme:
         .title(Line::styled(title, title_style));
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
-    if pane.id == PaneId::Tree {
-        draw_tree(frame, inner, &view.tree, pane.focused, theme);
+    match pane.id {
+        PaneId::Tree => draw_tree(frame, inner, &view.tree, pane.focused, theme),
+        PaneId::Raw => draw_raw(frame, inner, &view.raw, theme),
+        PaneId::Rendered => {}
+    }
+}
+
+/// The raw pane: the file's lines from the top of the view, wrapped to the
+/// pane, with an optional number column; each line colored by its block.
+fn draw_raw(frame: &mut Frame, area: Rect, raw: &RawView, theme: &Theme) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    if let Some(message) = &raw.message {
+        frame.render_widget(
+            Paragraph::new(Line::styled(message.as_str(), Style::new().fg(theme.dim))),
+            area,
+        );
+        return;
+    }
+    // The core gives the columns, so rows break where its scrolling counts
+    // them; a pane drawn narrower than that (it can't be, but) just clips.
+    let gutter = raw.gutter;
+    let text_width = raw.text_width.max(1);
+    let height = usize::from(area.height);
+    let mut lines: Vec<Line> = Vec::with_capacity(height);
+    for (i, (number, text, kind)) in raw.lines.iter().enumerate() {
+        if lines.len() == height {
+            break;
+        }
+        let style = line_style(*kind, theme);
+        // The first line may be scrolled into; only the rows that fit are built.
+        let skip = if i == 0 { raw.first_row } else { 0 };
+        let rows = wrap_rows(text, text_width, skip, height - lines.len());
+        for (r, row) in rows.into_iter().enumerate() {
+            let mut spans = Vec::with_capacity(2);
+            if gutter > 0 {
+                let label = if r + skip == 0 {
+                    number.to_string()
+                } else {
+                    String::new()
+                };
+                spans.push(Span::styled(
+                    format!("{label:>w$} ", w = gutter - 1),
+                    Style::new().fg(theme.linenr),
+                ));
+            }
+            spans.push(Span::styled(row, style));
+            lines.push(Line::from(spans));
+        }
+    }
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+fn line_style(kind: LineKind, theme: &Theme) -> Style {
+    match kind {
+        LineKind::Plain => Style::new(),
+        LineKind::Heading(_) => Style::new().fg(theme.heading).add_modifier(Modifier::BOLD),
+        LineKind::Code => Style::new().fg(theme.code),
+        LineKind::Quote => Style::new().fg(theme.quote),
+        LineKind::Rule | LineKind::Table => Style::new().fg(theme.rule),
+        LineKind::Meta => Style::new().fg(theme.meta),
     }
 }
 
 /// The file tree: folders marked open (▾) or closed (▸), children indented,
 /// the selection highlighted (reversed while the pane has focus).
 fn draw_tree(frame: &mut Frame, area: Rect, tree: &TreeView, focused: bool, theme: &Theme) {
-    if area.width == 0 || area.height == 0 {
+    // No folder at all (as in tests) draws nothing; an empty one says so.
+    if area.width == 0 || area.height == 0 || tree.root.is_none() {
         return;
     }
     let dim = Style::new().fg(theme.dim);
@@ -490,7 +566,13 @@ mod tests {
             press(&mut app, "j");
         }
         let screen = render(&mut app, 80, 16);
-        assert!(screen.contains("<F1>      help.keys"), "{screen}");
+        // The last row (the modal binding for <F1>) is on screen.
+        assert!(
+            screen
+                .lines()
+                .any(|l| l.contains("<F1>") && l.contains("help.keys")),
+            "{screen}"
+        );
         press(&mut app, "k");
         assert_ne!(render(&mut app, 80, 16), screen, "one k moves the view");
     }
@@ -563,6 +645,55 @@ mod tests {
             result: Ok(vec![entry("/notes/drafts/idea.md", false)]),
         });
         insta::assert_snapshot!("tree_listed", render(&mut app, 70, 8));
+    }
+
+    #[test]
+    fn raw_pane_with_numbers_wrapping_and_kinds() {
+        use stede_core::io::{Document, ServiceEvent};
+        let mut app = App::new(AppOptions {
+            file: Some("/n/a.md".into()),
+            ..AppOptions::default()
+        });
+        let text =
+            "# Title\n\nA long paragraph line that wraps in a narrow pane.\n\n```\ncode\n```\n";
+        app.handle_event(ServiceEvent::Opened {
+            path: "/n/a.md".into(),
+            result: Ok(Document {
+                path: "/n/a.md".into(),
+                text: text.into(),
+                model: stede_markdown::render(text, stede_markdown::Flavor::Gfm),
+                markdown: true,
+            }),
+        });
+        insta::assert_snapshot!(render(&mut app, 70, 12));
+    }
+
+    #[test]
+    fn a_line_taller_than_the_pane_scrolls_by_rows() {
+        use stede_core::io::{Document, ServiceEvent};
+        let mut app = App::new(AppOptions {
+            file: Some("/n/a.md".into()),
+            ..AppOptions::default()
+        });
+        let text = format!(
+            "{}\nend\n",
+            (0..40)
+                .map(|i| format!("w{i:02}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        app.handle_event(ServiceEvent::Opened {
+            path: "/n/a.md".into(),
+            result: Ok(Document {
+                path: "/n/a.md".into(),
+                model: stede_markdown::render(&text, stede_markdown::Flavor::Gfm),
+                text,
+                markdown: true,
+            }),
+        });
+        app.resize(40, 7);
+        press(&mut app, "3j");
+        insta::assert_snapshot!(render(&mut app, 40, 7));
     }
 
     #[test]

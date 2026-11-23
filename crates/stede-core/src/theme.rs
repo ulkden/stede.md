@@ -101,6 +101,12 @@ pub const SLOTS: &[(&str, &str)] = &[
     ("ui.strip.bg", "Background of a folded pane's strip"),
     ("ui.status.fg", "Text of the mode badge in the status line"),
     ("ui.status.bg", "Background of the mode badge"),
+    ("ui.linenr", "Line numbers in the raw pane"),
+    ("md.heading", "Headings"),
+    ("md.code", "Code: blocks and inline"),
+    ("md.quote", "Block quotes and alerts"),
+    ("md.rule", "Thematic breaks and table borders"),
+    ("md.meta", "Front matter and raw HTML"),
 ];
 
 /// A complete theme: a color for every slot.
@@ -131,6 +137,12 @@ impl Theme {
                 ("ui.strip.bg", "#292e42"),
                 ("ui.status.fg", "#1a1b26"),
                 ("ui.status.bg", "#7aa2f7"),
+                ("ui.linenr", "#3b4261"),
+                ("md.heading", "#7aa2f7"),
+                ("md.code", "#9ece6a"),
+                ("md.quote", "#bb9af7"),
+                ("md.rule", "#565f89"),
+                ("md.meta", "#737aa2"),
             ],
             "light" => &[
                 ("ui.accent", "#2e5ab8"),
@@ -140,6 +152,12 @@ impl Theme {
                 ("ui.strip.bg", "#d0d5e3"),
                 ("ui.status.fg", "#e1e2e7"),
                 ("ui.status.bg", "#2e5ab8"),
+                ("ui.linenr", "#a8aecb"),
+                ("md.heading", "#2e5ab8"),
+                ("md.code", "#387068"),
+                ("md.quote", "#7847bd"),
+                ("md.rule", "#8990b3"),
+                ("md.meta", "#6172b0"),
             ],
             _ => return None,
         };

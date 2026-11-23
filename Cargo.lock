@@ -1612,6 +1612,7 @@ name = "stede-core"
 version = "0.0.1"
 dependencies = [
  "toml_edit",
+ "unicode-width",
 ]
 
 [[package]]
@@ -1644,6 +1645,7 @@ dependencies = [
  "ignore",
  "notify",
  "stede-core",
+ "stede-markdown",
  "tokio",
 ]
 
@@ -1656,6 +1658,7 @@ dependencies = [
  "stede-core",
  "stede-markdown",
  "stede-services",
+ "unicode-width",
 ]
 
 [[package]]
