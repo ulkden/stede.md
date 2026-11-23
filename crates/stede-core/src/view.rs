@@ -7,6 +7,9 @@
 use crate::layout::{PaneId, PaneRect};
 use crate::modal::Modal;
 
+/// Rows at the bottom of the screen for the status line.
+pub const STATUS_ROWS: u16 = 1;
+
 /// One frame.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct View<'a> {

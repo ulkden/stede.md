@@ -82,13 +82,32 @@ pub fn run() -> io::Result<()> {
     )?;
     out.flush()?;
 
-    terminal::enable_raw_mode()?;
-    let result = echo_keys(&mut out);
-    terminal::disable_raw_mode()?;
+    let _raw = RawMode::enable()?;
+    echo_keys(&mut out)?;
     writeln!(out)?;
-    result
+    Ok(())
 }
 
+/// Raw mode for the probe, turned off when dropped, including on a panic,
+/// so the shell isn't left without echo.
+struct RawMode;
+
+impl RawMode {
+    fn enable() -> io::Result<Self> {
+        terminal::enable_raw_mode()?;
+        Ok(Self)
+    }
+}
+
+impl Drop for RawMode {
+    fn drop(&mut self) {
+        let _ = terminal::disable_raw_mode();
+    }
+}
+
+/// Echoes raw key events. This is the one place keys don't go through the
+/// keymap and action registry, on purpose: the probe shows what the terminal
+/// sends before any binding applies, so its quit key (`q q`) is fixed.
 fn echo_keys(out: &mut impl Write) -> io::Result<()> {
     let mut last_q = false;
     loop {

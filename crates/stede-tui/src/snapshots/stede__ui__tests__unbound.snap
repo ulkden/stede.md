@@ -1,6 +1,6 @@
 ---
 source: crates/stede-tui/src/ui.rs
-expression: "render(&app, 40, 4)"
+expression: "render(&mut app, 40, 4)"
 ---
 "┌ Raw ─────────┐┌ Rendered ────┐┌ Files┐"
 "│              ││              ││      │"

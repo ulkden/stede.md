@@ -54,6 +54,7 @@ Tasks live in the `justfile`, and CI runs the same recipes. Setup and the full l
 just setup                  # pinned toolchain and dev tools
 just ci                     # everything CI runs: fmt, clippy, tests, docs, deny, layers, typos, MSRV
 just dep-age                # 14-day rule on new dependency versions (network, Python 3.11+)
+just dep-settle             # pin too-new crates in Cargo.lock to their newest eligible release
 just fmt                    # cargo fmt --all
 just layers                 # headless crates must not depend on UI crates
 cargo run -p stede-tui      # runs `stede`

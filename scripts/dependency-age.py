@@ -352,7 +352,14 @@ def compatible(current: str, candidate: str) -> bool:
 def eligible_version(name: str, current: str, cutoff: dt.datetime) -> str | None:
     """The newest release of `name` that is old enough, not yanked, not a
     pre-release, semver-compatible with `current`, and not newer than it."""
-    versions = crates_io(f"{name}/versions?per_page=100")["versions"]
+    versions = []
+    page = f"{name}/versions?per_page=100"
+    # Follow every page: an older semver line can sit past the first 100.
+    while page:
+        data = crates_io(page)
+        versions += data["versions"]
+        next_page = (data.get("meta") or {}).get("next_page")
+        page = f"{name}/versions{next_page}" if next_page else None
     best = None
     for v in versions:
         num = v["num"]
@@ -385,9 +392,13 @@ def settle(base: str, min_days: int, now: dt.datetime, rounds: int = 5) -> int:
             if change.old and is_patch_bump(change.old, change.new):
                 continue
             key = f"{change.name}@{change.new}"
-            if crate_published(change.name, change.new) <= cutoff:
+            try:
+                if crate_published(change.name, change.new) <= cutoff:
+                    continue
+                target = eligible_version(change.name, change.new, cutoff)
+            except Exception as e:  # noqa: BLE001 - report it, keep settling the rest
+                stuck[key] = f"could not look it up: {e}"
                 continue
-            target = eligible_version(change.name, change.new, cutoff)
             if target is None:
                 stuck[key] = "no compatible release is old enough"
                 continue

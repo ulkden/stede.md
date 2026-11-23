@@ -10,7 +10,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
-use stede_core::modal::{Modal, ModalBody};
+use stede_core::modal::{self, Modal, ModalBody};
 use stede_core::view::{PaneView, View};
 
 /// Colors for the shell. Step 4 (config and themes) replaces this with theme
@@ -40,11 +40,8 @@ impl Default for Theme {
     }
 }
 
-/// Share of the screen a modal may cover at most.
-const MODAL_MAX_WIDTH_PCT: u16 = 80;
-const MODAL_MAX_HEIGHT_PCT: u16 = 70;
-
-/// Draws one frame. The view must have been built for `frame.area().width`.
+/// Draws one frame. The view must have been built for this frame's size
+/// (`App::resize` before `App::view`).
 pub fn draw(frame: &mut Frame, view: &View, theme: &Theme) {
     let [panes_area, status_area] =
         Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(frame.area());
@@ -173,10 +170,14 @@ fn draw_modal(frame: &mut Frame, area: Rect, modal: &Modal, theme: &Theme) {
         .max(Line::raw(title.as_str()).width())
         .max(footer.len())
         .saturating_add(4); // borders and a cell of padding each side
-    let max_width = usize::from(area.width) * usize::from(MODAL_MAX_WIDTH_PCT) / 100;
-    let max_height = usize::from(area.height) * usize::from(MODAL_MAX_HEIGHT_PCT) / 100;
-    let width = want_width.min(max_width).max(1) as u16;
-    let height = lines.len().saturating_add(2).min(max_height).max(1) as u16;
+    // The core sizes modals the same way, so its scrolling matches this.
+    let (max_width, max_height) = modal::max_size(area.width, area.height);
+    let width = want_width.min(usize::from(max_width)).max(1) as u16;
+    let height = lines
+        .len()
+        .saturating_add(usize::from(modal::BORDER_ROWS))
+        .min(usize::from(max_height))
+        .max(1) as u16;
     let rect = Rect::new(
         area.x + area.width.saturating_sub(width) / 2,
         area.y + area.height.saturating_sub(height) / 2,
@@ -213,15 +214,16 @@ mod tests {
     use stede_core::layout::LayoutOptions;
     use stede_core::{App, AppOptions};
 
-    fn draw_only(app: &App, width: u16, height: u16) -> Terminal<TestBackend> {
+    fn draw_only(app: &mut App, width: u16, height: u16) -> Terminal<TestBackend> {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        app.resize(width, height);
         terminal
-            .draw(|f| draw(f, &app.view(f.area().width), &Theme::default()))
+            .draw(|f| draw(f, &app.view(), &Theme::default()))
             .unwrap();
         terminal
     }
 
-    fn render(app: &App, width: u16, height: u16) -> String {
+    fn render(app: &mut App, width: u16, height: u16) -> String {
         draw_only(app, width, height).backend().to_string()
     }
 
@@ -233,49 +235,64 @@ mod tests {
 
     #[test]
     fn default_layout() {
-        let app = App::new(AppOptions::default());
-        insta::assert_snapshot!(render(&app, 60, 8));
+        let mut app = App::new(AppOptions::default());
+        insta::assert_snapshot!(render(&mut app, 60, 8));
     }
 
     #[test]
     fn single_file_starts_with_tree_folded() {
-        let app = App::new(AppOptions {
+        let mut app = App::new(AppOptions {
             layout: LayoutOptions {
                 tree_folded: true,
                 ..LayoutOptions::default()
             },
         });
-        insta::assert_snapshot!(render(&app, 60, 8));
+        insta::assert_snapshot!(render(&mut app, 60, 8));
     }
 
     #[test]
     fn focus_one_folds_the_rest_to_strips() {
         let mut app = App::new(AppOptions::default());
         press(&mut app, "<C-l><leader>z");
-        insta::assert_snapshot!(render(&app, 40, 10));
+        insta::assert_snapshot!(render(&mut app, 40, 10));
     }
 
     #[test]
     fn pending_keys_and_messages_show_in_the_status_line() {
         let mut app = App::new(AppOptions::default());
         press(&mut app, "3<C-w>");
-        insta::assert_snapshot!("pending", render(&app, 40, 4));
+        insta::assert_snapshot!("pending", render(&mut app, 40, 4));
         press(&mut app, "x");
-        insta::assert_snapshot!("unbound", render(&app, 40, 4));
+        insta::assert_snapshot!("unbound", render(&mut app, 40, 4));
     }
 
     #[test]
     fn cheat_sheet() {
         let mut app = App::new(AppOptions::default());
         press(&mut app, "<F1>");
-        insta::assert_snapshot!(render(&app, 100, 40));
+        insta::assert_snapshot!(render(&mut app, 100, 40));
     }
 
     #[test]
     fn cheat_sheet_scrolls_in_a_small_terminal() {
         let mut app = App::new(AppOptions::default());
+        app.resize(80, 16);
         press(&mut app, "<F1>jjj");
-        insta::assert_snapshot!(render(&app, 80, 16));
+        insta::assert_snapshot!(render(&mut app, 80, 16));
+    }
+
+    #[test]
+    fn cheat_sheet_scrolled_to_the_end_shows_its_last_line() {
+        let mut app = App::new(AppOptions::default());
+        app.resize(80, 16);
+        press(&mut app, "<F1>");
+        for _ in 0..50 {
+            press(&mut app, "j");
+        }
+        let screen = render(&mut app, 80, 16);
+        assert!(screen.contains("<F1>      help.keys"), "{screen}");
+        press(&mut app, "k");
+        assert_ne!(render(&mut app, 80, 16), screen, "one k moves the view");
     }
 
     #[test]
@@ -283,11 +300,11 @@ mod tests {
         let mut app = App::new(AppOptions::default());
         // Draw only: TestBackend itself can't format a zero-width screen.
         for (w, h) in [(0, 0), (1, 1), (2, 3), (5, 2), (3, 30), (0, 5), (5, 0)] {
-            draw_only(&app, w, h);
+            draw_only(&mut app, w, h);
         }
         press(&mut app, "<F1>");
         for (w, h) in [(0, 0), (1, 1), (4, 4), (10, 3)] {
-            draw_only(&app, w, h);
+            draw_only(&mut app, w, h);
         }
     }
 

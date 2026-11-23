@@ -6,6 +6,26 @@
 //! lost by closing it. The stack lives in the core so every front end draws
 //! the same modals with the same keys.
 
+/// The most of the pane area a modal may cover, in percent. Front ends size
+/// modals with [`max_size`] so the core's scrolling matches what is drawn.
+pub const MAX_WIDTH_PCT: u16 = 80;
+pub const MAX_HEIGHT_PCT: u16 = 70;
+
+/// Rows a modal's border takes (top and bottom).
+pub const BORDER_ROWS: u16 = 2;
+
+/// The largest modal, in cells, for a pane area of this size.
+pub fn max_size(width: u16, height: u16) -> (u16, u16) {
+    let w = u32::from(width) * u32::from(MAX_WIDTH_PCT) / 100;
+    let h = u32::from(height) * u32::from(MAX_HEIGHT_PCT) / 100;
+    (w as u16, h as u16)
+}
+
+/// How many body lines fit in the largest modal for a pane area this tall.
+pub fn max_body_rows(height: u16) -> usize {
+    usize::from(max_size(0, height).1.saturating_sub(BORDER_ROWS))
+}
+
 /// What kind of modal this is. It decides which keys work inside it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModalKind {
@@ -80,9 +100,11 @@ impl Modal {
         }
     }
 
-    /// Scrolls by `delta` lines, staying within the content.
-    pub fn scroll_by(&mut self, delta: isize) {
-        let max = self.line_count().saturating_sub(1);
+    /// Scrolls by `delta` lines. `visible` is how many body lines show; the
+    /// scroll stops where the last line reaches the bottom, so scrolling back
+    /// always moves the view.
+    pub fn scroll_by(&mut self, delta: isize, visible: usize) {
+        let max = self.line_count().saturating_sub(visible.max(1));
         self.scroll = self.scroll.saturating_add_signed(delta).min(max);
     }
 
@@ -227,12 +249,24 @@ mod tests {
             },
         );
         assert_eq!(m.line_count(), 1 + 3 + 2);
-        m.scroll_by(-3);
+        m.scroll_by(-3, 2);
         assert_eq!(m.scroll, 0);
-        m.scroll_by(100);
-        assert_eq!(m.scroll, 5);
-        m.scroll_by(-2);
-        assert_eq!(m.scroll, 3);
+        m.scroll_by(100, 2);
+        assert_eq!(
+            m.scroll, 4,
+            "6 lines, 2 visible: stops with the last line at the bottom"
+        );
+        m.scroll_by(-1, 2);
+        assert_eq!(m.scroll, 3, "and the first press back moves the view");
+        m.scroll_by(100, 10);
+        assert_eq!(m.scroll, 0, "everything fits: no scroll");
+    }
+
+    #[test]
+    fn size_limits() {
+        assert_eq!(max_size(100, 40), (80, 28));
+        assert_eq!(max_body_rows(40), 26);
+        assert_eq!(max_body_rows(1), 0);
     }
 
     #[test]

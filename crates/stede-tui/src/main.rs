@@ -2,7 +2,7 @@
 //! `stede`: the STEDE.md terminal front end.
 //!
 //! Owns the event loop: reads crossterm events, hands keys to the core, and
-//! draws the view model the core returns. `ratatui::init` puts the terminal
+//! draws the view model the core returns. `ratatui::try_init` puts the terminal
 //! in raw mode on the alternate screen and installs a panic hook that
 //! restores it; `ratatui::restore` undoes it on every normal exit path.
 
@@ -13,6 +13,7 @@ mod ui;
 use std::io;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::Instant;
 
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event};
@@ -99,7 +100,13 @@ fn open(path: Option<PathBuf>) -> io::Result<()> {
             ..LayoutOptions::default()
         },
     });
-    let mut terminal = ratatui::init();
+    if let Some(p) = &path {
+        // Loading files arrives in phase 1 step 5 (docs/phase-1.md).
+        app.notify(format!("{}: opening files isn't built yet", p.display()));
+    }
+    // try_init returns an error (no TTY, say) instead of panicking, and installs
+    // the panic hook that restores the terminal.
+    let mut terminal = ratatui::try_init()?;
     let result = run(&mut terminal, &mut app);
     ratatui::restore();
     result
@@ -107,31 +114,35 @@ fn open(path: Option<PathBuf>) -> io::Result<()> {
 
 fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
     let theme = ui::Theme::default();
-    let mut waiting = false;
+    // When a key sequence is ambiguous: the moment its timeout runs out. Other
+    // events (resize, focus, unnamed keys) don't push the deadline back.
+    let mut deadline: Option<Instant> = None;
     loop {
-        terminal.draw(|frame| ui::draw(frame, &app.view(frame.area().width), &theme))?;
+        let size = terminal.size()?;
+        app.resize(size.width, size.height);
+        terminal.draw(|frame| ui::draw(frame, &app.view(), &theme))?;
         if app.should_quit() {
             return Ok(());
         }
-        // While a key sequence is ambiguous, wait only `key_timeout` for more.
-        let event = if waiting {
-            if event::poll(app.key_timeout())? {
-                Some(event::read()?)
-            } else {
-                None
-            }
-        } else {
-            Some(event::read()?)
-        };
-        match event {
-            None => waiting = app.handle_timeout().wait,
-            Some(Event::Key(key)) => {
-                if let Some(key) = input::to_key(key) {
-                    waiting = app.handle_key(key).wait;
+        let event = match deadline {
+            Some(at) => {
+                let left = at.saturating_duration_since(Instant::now());
+                if event::poll(left)? {
+                    Some(event::read()?)
+                } else {
+                    None
                 }
             }
+            None => Some(event::read()?),
+        };
+        let handled = match event {
+            None => Some(app.handle_timeout()),
+            Some(Event::Key(key)) => input::to_key(key).map(|key| app.handle_key(key)),
             // Resize and everything else: just draw again.
-            Some(_) => {}
+            Some(_) => None,
+        };
+        if let Some(handled) = handled {
+            deadline = handled.wait.then(|| Instant::now() + app.key_timeout());
         }
     }
 }
