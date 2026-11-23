@@ -53,5 +53,5 @@ These checks come from `CLAUDE.md` and `docs/architecture.md`. Breaking a settle
   - The release is at least 14 days old, unless it's a patch or security fix.
   - The license is on the `deny.toml` allow list. Adding a license needs a reason in the PR.
   - The phase actually needs it now, per "Add dependencies as a phase needs them" in `CLAUDE.md`.
-- [ ] The workflows and the `justfile` stay in step: tool versions match, and actions are pinned to a commit SHA with a version comment.
+- [ ] Tool versions and the MSRV are defined once: tools in the `justfile`, MSRV in `Cargo.toml`. Workflows read them through `.github/actions/setup`, never hard-code them. Actions are pinned to a commit SHA with a version comment.
 - [ ] Docs match the change. Update `CLAUDE.md` if a rule or command changed, `CONTRIBUTING.md` if the workflow changed, and `docs/architecture.md` if the design moved. Stale docs are Minor.

@@ -3,15 +3,20 @@
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
-# Pinned dev tools. Bump them by hand in the monthly cycle (CONTRIBUTING.md)
-# and keep them in step with the `install-action` step in .github/workflows/.
+# Pinned dev tools: the one place their versions live. CI reads them from here
+# through .github/actions/setup. Bump them by hand in the monthly cycle
+# (CONTRIBUTING.md). Only `just` itself is also pinned in that action, and CI
+# fails if the two differ.
 just_version := "1.59.0"
 deny_version := "0.20.2"
 insta_version := "1.49.0"
 typos_version := "1.52.0"
 
-# Minimum supported Rust version; must match `rust-version` in Cargo.toml.
-msrv := "1.85.0"
+# Tools CI installs, in taiki-e/install-action's naming.
+ci_tools := "cargo-deny@" + deny_version + ",typos@" + typos_version
+
+# Minimum supported Rust version, read from `rust-version` in Cargo.toml.
+msrv := `sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml`
 
 # Crates that hold no UI code, and the UI crates they must never pull in.
 headless_crates := "stede-core stede-markdown stede-services"
@@ -72,7 +77,13 @@ layers:
     set -euo pipefail
     status=0
     for crate in {{ headless_crates }}; do
-        if hits=$(cargo tree --locked -p "$crate" --prefix none --format '{p}' | grep -E '^({{ ui_crates }})([-_][a-z0-9_-]+)? v'); then
+        # Every feature and every target, so optional and platform-only deps count too.
+        # Run cargo tree on its own: inside the `if` below, a failure would read as "no hits".
+        if ! tree=$(cargo tree --locked -p "$crate" --all-features --target all --edges normal,build,dev --prefix none --format '{p}'); then
+            echo "error: cargo tree failed for $crate" >&2
+            exit 1
+        fi
+        if hits=$(grep -E '^({{ ui_crates }})([-_][a-z0-9_-]+)? v' <<<"$tree"); then
             echo "error: $crate must not depend on a UI crate:" >&2
             echo "$hits" | sort -u >&2
             status=1

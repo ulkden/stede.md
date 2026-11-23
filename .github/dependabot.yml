@@ -33,7 +33,8 @@ updates:
       prefix: deps
 
   - package-ecosystem: github-actions
-    directory: /
+    # Workflows, plus the shared composite action in .github/actions/.
+    directories: ["/", "/.github/actions/*"]
     schedule:
       interval: weekly
       day: monday
@@ -47,6 +48,8 @@ updates:
       actions:
         applies-to: version-updates
         patterns: ["*"]
+        update-types: [minor, patch]
+      # Major action bumps stay one PR each, like crates.
     labels: [dependencies, ci]
     commit-message:
       prefix: ci

@@ -27,7 +27,7 @@ just install-hooks                   # optional: fmt and spell check before each
 | `just layers` | Fail if `stede-core`, `stede-markdown` or `stede-services` depends on a UI crate |
 | `just msrv` | Build on the minimum supported Rust version (`rust-version` in `Cargo.toml`) |
 
-CI (`.github/workflows/ci.yml`) runs the same recipes on Linux and macOS. A separate daily job (`audit.yml`) checks the committed `Cargo.lock` against the RustSec advisory database.
+CI (`.github/workflows/ci.yml`) runs the same recipes on Linux and macOS, with the same tool versions and MSRV, all read from the `justfile` and `Cargo.toml`. A separate daily job (`audit.yml`) checks the committed `Cargo.lock` against the RustSec advisory database.
 
 ## Dependencies
 
@@ -38,7 +38,7 @@ CI (`.github/workflows/ci.yml`) runs the same recipes on Linux and macOS. A sepa
 | Crates | `Cargo.lock` (committed); CI and `just` always pass `--locked` | Dependabot (`cargo`) |
 | Rust toolchain | `rust-toolchain.toml` | Dependabot (`rust-toolchain`) |
 | GitHub Actions | Full commit SHA, version in a comment | Dependabot (`github-actions`) |
-| Dev tools (just, cargo-deny, cargo-insta, typos) | `justfile` and the `DEV_TOOLS` env in the workflows | By hand, in the monthly pass |
+| Dev tools (just, cargo-deny, cargo-insta, typos) | `justfile` only; CI reads it through `.github/actions/setup`. `just` is also pinned in that action, and CI fails if the two differ | By hand, in the monthly pass |
 
 Declare third-party crates once, in `[workspace.dependencies]` in the root `Cargo.toml`, with a full `major.minor.patch` version. Member crates then use `name.workspace = true`. `Cargo.lock` is the real pin. Use an exact `=` requirement only for a crate that is known to break semver, and leave a comment saying why.
 
@@ -55,5 +55,5 @@ If you add a new dependency or bump one by hand, follow the same rule. Pick a re
 ### The update cycle
 
 - **Weekly (Monday):** Dependabot opens grouped PRs: one for crate patches, one for crate minors, one for actions, and one PR per major bump or toolchain release. Read the changelogs, let CI run, then merge. A major or toolchain bump may also need code changes, or an MSRV note if a crate raises its own `rust-version`.
-- **Monthly (first Monday):** check the dev tools in the `justfile` and the workflows for releases older than 14 days, bump them in both places, and run `just setup && just ci`. Also run `cargo update --dry-run` to spot anything Dependabot has missed.
+- **Monthly (first Monday):** check the dev tools in the `justfile` for releases older than 14 days and bump them there. If `just` itself changes, also bump it in `.github/actions/setup/action.yml` and the setup line above. Then run `just setup && just ci`. Also run `cargo update --dry-run` to spot anything Dependabot has missed.
 - **Any time:** a security PR or a failing audit takes priority. Merge the fix once CI passes.

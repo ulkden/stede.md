@@ -1,5 +1,7 @@
 # Every action is pinned to a full commit SHA, with its version in a comment.
 # Dependabot keeps them current under the cooldown in .github/dependabot.yml.
+# Toolchain and dev-tool versions come from rust-toolchain.toml and the justfile,
+# through .github/actions/setup.
 name: CI
 
 on:
@@ -19,8 +21,6 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
-  # Keep in step with the versions in the justfile.
-  DEV_TOOLS: just@1.59.0,cargo-deny@0.20.2,typos@1.52.0
 
 jobs:
   test:
@@ -34,12 +34,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install toolchain from rust-toolchain.toml
-        run: rustup toolchain install
+      - uses: ./.github/actions/setup
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
-        with:
-          tool: ${{ env.DEV_TOOLS }}
       - run: just fmt-check
       - run: just lint
       - run: just test
@@ -52,11 +48,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install toolchain from rust-toolchain.toml
-        run: rustup toolchain install
-      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
-        with:
-          tool: ${{ env.DEV_TOOLS }}
+      - uses: ./.github/actions/setup
       - name: cargo deny (licenses, advisories, bans, sources)
         run: just deny
       - name: Headless crates have no UI dependencies
@@ -70,12 +62,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install MSRV toolchain
-        run: |
-          msrv=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml)
-          echo "MSRV=$msrv" >> "$GITHUB_ENV"
-          rustup toolchain install "$msrv" --profile minimal
+      - uses: ./.github/actions/setup
+        with:
+          msrv: "true"
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: msrv
-      - run: cargo +"$MSRV" check --workspace --all-targets --locked
+      - run: just msrv
