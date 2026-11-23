@@ -1,0 +1,43 @@
+# Shared CI setup: the pinned Rust toolchain plus the dev tools pinned in the justfile.
+# Tool versions live only in the justfile; `just` itself is pinned here too, because
+# it has to be installed before the justfile can be read. The check below fails CI if
+# the two pins differ.
+name: Set up toolchain and dev tools
+description: Install the toolchain from rust-toolchain.toml, just, and the justfile's ci_tools.
+
+inputs:
+  msrv:
+    description: Also install the MSRV toolchain (rust-version in Cargo.toml).
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Install toolchain from rust-toolchain.toml
+      shell: bash
+      run: rustup toolchain install
+
+    - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+      with:
+        tool: just@1.59.0
+
+    - name: Read tool versions from the justfile
+      id: tools
+      shell: bash
+      run: |
+        pinned=$(just --evaluate just_version)
+        installed=$(just --version | cut -d' ' -f2)
+        if [ "$pinned" != "$installed" ]; then
+          echo "::error::justfile pins just $pinned but .github/actions/setup installs $installed"
+          exit 1
+        fi
+        echo "list=$(just --evaluate ci_tools)" >> "$GITHUB_OUTPUT"
+
+    - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+      with:
+        tool: ${{ steps.tools.outputs.list }}
+
+    - name: Install MSRV toolchain
+      if: inputs.msrv == 'true'
+      shell: bash
+      run: rustup toolchain install "$(just --evaluate msrv)" --profile minimal

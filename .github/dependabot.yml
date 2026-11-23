@@ -1,0 +1,68 @@
+# Dependency update policy (details in CONTRIBUTING.md):
+# - Everything is pinned: Cargo.lock, actions by commit SHA, rust-toolchain.toml.
+# - New minor and major releases wait 14 days before Dependabot proposes them.
+# - Patch releases (bug fixes) can be proposed at once (crates and toolchain;
+#   GitHub Actions only supports a flat cooldown, so action patches wait too).
+# - Security updates ignore the cooldown and open as soon as an advisory lands.
+#   They come from "Dependabot security updates" in the repo settings.
+# - PRs open on Mondays and are grouped so each week is one review pass.
+version: 2
+
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    cooldown:
+      default-days: 14
+      semver-major-days: 14
+      semver-minor-days: 14
+      semver-patch-days: 0
+    groups:
+      cargo-patch:
+        applies-to: version-updates
+        update-types: [patch]
+      cargo-minor:
+        applies-to: version-updates
+        update-types: [minor]
+      # Major updates stay one PR per crate: they need their own review.
+    open-pull-requests-limit: 10
+    labels: [dependencies, rust]
+    commit-message:
+      prefix: deps
+
+  - package-ecosystem: github-actions
+    # Workflows, plus the shared composite action in .github/actions/.
+    directories: ["/", "/.github/actions/*"]
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    # This ecosystem has no per-semver cooldown, so every action release waits
+    # 14 days, patches too. Actions only run in CI; security updates still skip it.
+    cooldown:
+      default-days: 14
+    groups:
+      actions:
+        applies-to: version-updates
+        patterns: ["*"]
+        update-types: [minor, patch]
+      # Major action bumps stay one PR each, like crates.
+    labels: [dependencies, ci]
+    commit-message:
+      prefix: ci
+
+  - package-ecosystem: rust-toolchain
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    cooldown:
+      default-days: 14
+      semver-patch-days: 0
+    labels: [dependencies, rust]
+    commit-message:
+      prefix: toolchain

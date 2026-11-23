@@ -1,0 +1,7 @@
+# Spell-check config for `just typos`. Add project words here, not inline ignores.
+[default.extend-words]
+ratatui = "ratatui"
+Ratatui = "Ratatui"
+
+[files]
+extend-exclude = ["LICENSE*", "Cargo.lock", "*.snap"]

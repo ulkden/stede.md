@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Fast checks before each commit. Enable with `just install-hooks`.
+# Skip once with `git commit --no-verify`.
+# It checks the working tree, not just what is staged; CI checks the commit itself.
+set -euo pipefail
+
+cargo fmt --all --check
+if command -v typos >/dev/null; then
+    typos
+fi

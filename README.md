@@ -16,6 +16,8 @@ A fast, terminal-first Markdown reader and writer for macOS, Linux and WSL.
 cargo run -p stede-tui
 ```
 
+Development setup, checks and the dependency policy are in [`CONTRIBUTING.md`](CONTRIBUTING.md).
+
 ## License
 
 GPL-3.0-or-later. See [`LICENSE`](LICENSE).
