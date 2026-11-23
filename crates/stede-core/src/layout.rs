@@ -124,8 +124,9 @@ pub struct Layout {
     slots: Vec<Slot>,
     focus: PaneId,
     strip_width: u16,
-    /// States saved by `focus_one`, restored when it is pressed again.
-    saved: Option<Vec<PaneState>>,
+    /// States saved by `focus_one`, by pane (not position, which
+    /// `set_tree_side` can change), restored when it is pressed again.
+    saved: Option<Vec<(PaneId, PaneState)>>,
     modals: ModalStack,
 }
 
@@ -166,6 +167,17 @@ impl Layout {
             strip_width: options.strip_width.max(1),
             saved: None,
             modals: ModalStack::new(),
+        }
+    }
+
+    /// Moves the file tree to the left or right edge, keeping every pane's
+    /// state, width and the focus.
+    pub fn set_tree_side(&mut self, side: TreeSide) {
+        let i = self.index(PaneId::Tree);
+        let tree = self.slots.remove(i);
+        match side {
+            TreeSide::Left => self.slots.insert(0, tree),
+            TreeSide::Right => self.slots.push(tree),
         }
     }
 
@@ -268,8 +280,9 @@ impl Layout {
     /// from before.
     pub fn focus_one(&mut self) {
         if let Some(saved) = self.saved.take() {
-            for (slot, state) in self.slots.iter_mut().zip(saved) {
-                slot.state = state;
+            for (id, state) in saved {
+                let i = self.index(id);
+                self.slots[i].state = state;
             }
             // The focused pane may have been folded in the saved layout.
             if self.state(self.focus) != PaneState::Open {
@@ -277,7 +290,7 @@ impl Layout {
             }
             return;
         }
-        self.saved = Some(self.slots.iter().map(|s| s.state).collect());
+        self.saved = Some(self.slots.iter().map(|s| (s.id, s.state)).collect());
         let focus = self.focus;
         for slot in &mut self.slots {
             slot.state = if slot.id == focus {
@@ -607,6 +620,23 @@ mod tests {
         for pair in g.windows(2) {
             assert_eq!(pair[0].x + pair[0].width, pair[1].x);
         }
+    }
+
+    #[test]
+    fn moving_the_tree_keeps_focus_one_restorable() {
+        let mut l = Layout::default();
+        l.toggle(PaneId::Tree);
+        l.focus_one();
+        l.set_tree_side(TreeSide::Left);
+        l.focus_one();
+        assert_eq!(l.state(PaneId::Raw), PaneState::Open);
+        assert_eq!(l.state(PaneId::Rendered), PaneState::Open);
+        assert_eq!(
+            l.state(PaneId::Tree),
+            PaneState::Folded,
+            "restored by pane, not position"
+        );
+        assert_eq!(l.order().next(), Some(PaneId::Tree));
     }
 
     #[test]

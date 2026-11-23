@@ -10,6 +10,9 @@ publish.workspace = true
 
 [dependencies]
 stede-core.workspace = true
+ignore.workspace = true
+notify.workspace = true
+tokio.workspace = true
 
 [lints]
 workspace = true

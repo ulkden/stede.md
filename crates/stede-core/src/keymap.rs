@@ -470,7 +470,7 @@ impl Resolver {
 }
 
 use Mode::{Normal, Probe};
-use Scope::{Global, Modal, OutputModal};
+use Scope::{Global, Modal, OutputModal, Pane};
 
 /// The built-in bindings: mode, scope, keys, action.
 ///
@@ -493,6 +493,17 @@ const DEFAULT_BINDINGS: &[(Mode, Scope, &str, &str)] = &[
     (Normal, Modal, "<Esc>", "modal.close"),
     (Normal, Modal, "<C-c>", "modal.close_all"),
     (Probe, Global, "qq", "probe.quit"),
+    (Normal, Pane(PaneId::Tree), "j", "tree.down"),
+    (Normal, Pane(PaneId::Tree), "<Down>", "tree.down"),
+    (Normal, Pane(PaneId::Tree), "k", "tree.up"),
+    (Normal, Pane(PaneId::Tree), "<Up>", "tree.up"),
+    (Normal, Pane(PaneId::Tree), "gg", "tree.top"),
+    (Normal, Pane(PaneId::Tree), "G", "tree.bottom"),
+    (Normal, Pane(PaneId::Tree), "l", "tree.open"),
+    (Normal, Pane(PaneId::Tree), "<CR>", "tree.open"),
+    (Normal, Pane(PaneId::Tree), "<Right>", "tree.open"),
+    (Normal, Pane(PaneId::Tree), "h", "tree.close"),
+    (Normal, Pane(PaneId::Tree), "<Left>", "tree.close"),
     (Normal, OutputModal, "j", "modal.scroll_down"),
     (Normal, OutputModal, "<Down>", "modal.scroll_down"),
     (Normal, OutputModal, "k", "modal.scroll_up"),

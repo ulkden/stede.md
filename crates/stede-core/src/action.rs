@@ -260,6 +260,36 @@ const BUILTINS: &[(&str, &str, &[Mode])] = &[
         EDITOR,
     ),
     (
+        "tree.down",
+        "Select the next entry in the file tree",
+        EDITOR,
+    ),
+    (
+        "tree.up",
+        "Select the previous entry in the file tree",
+        EDITOR,
+    ),
+    (
+        "tree.top",
+        "Select the first entry in the file tree",
+        EDITOR,
+    ),
+    (
+        "tree.bottom",
+        "Select the last entry in the file tree",
+        EDITOR,
+    ),
+    (
+        "tree.open",
+        "Open the selected folder or file; on an open folder, close it",
+        EDITOR,
+    ),
+    (
+        "tree.close",
+        "Close the selected folder, or go to its parent",
+        EDITOR,
+    ),
+    (
         "probe.quit",
         "Leave the terminal probe (stede --probe)",
         PROBE,

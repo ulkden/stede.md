@@ -81,7 +81,7 @@ impl Origin {
 }
 
 /// One config file's text.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Layer {
     pub path: PathBuf,
     pub text: String,
@@ -518,7 +518,7 @@ pub fn project_dir(start: &Path) -> Option<PathBuf> {
 
 /// A path with `.` dropped and `..` applied to the part before it, without
 /// touching the file system (so symlinks are kept as written).
-fn lexical_normal(path: &Path) -> PathBuf {
+pub fn lexical_normal(path: &Path) -> PathBuf {
     use std::path::Component;
     let mut out = PathBuf::new();
     for c in path.components() {
@@ -533,6 +533,27 @@ fn lexical_normal(path: &Path) -> PathBuf {
         }
     }
     out
+}
+
+/// The config files to watch, in layer order: the user file and the
+/// project's two files, whether or not they (or their folders) exist yet.
+/// With no `.stede/` at or above `start`, the project files are the ones a
+/// `.stede/` in `start` itself would hold, so creating it is noticed.
+pub fn config_candidates(start: &Path, env: impl Fn(&str) -> Option<String>) -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = user_config_path(env).into_iter().collect();
+    let dir = project_dir(start).unwrap_or_else(|| {
+        let abs =
+            lexical_normal(&std::path::absolute(start).unwrap_or_else(|_| start.to_path_buf()));
+        let folder = if abs.is_file() {
+            abs.parent().map(Path::to_path_buf).unwrap_or(abs)
+        } else {
+            abs
+        };
+        folder.join(".stede")
+    });
+    paths.push(dir.join("config.toml"));
+    paths.push(dir.join("local.toml"));
+    paths
 }
 
 /// Config files in layer order, whether they exist or not.

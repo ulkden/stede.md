@@ -20,7 +20,7 @@ Each step is one PR through the `stede-pr-review` loop. Tick a step when its PR 
 - [x] **3. Markdown render model** (`stede-markdown`: comrak)
   - A render model of blocks with style tokens and source line ranges, so scroll sync can map lines both ways
   - The GFM spec examples as a test suite: the phase gate (`crates/stede-markdown/tests/gfm_spec.rs`)
-- [ ] **4. Config and themes** (serde, toml)
+- [x] **4. Config and themes** (serde, toml)
   - Layers: defaults, user file, `.stede/config.toml`, `.stede/local.toml` (session `:set` needs the command line, phase 2; profiles are phase 3)
   - Errors carry file, line and key
   - Keymap overrides (including `[keys.probe]`, which the probe must load too; it uses the defaults until then), theme slots, and the dark default theme
