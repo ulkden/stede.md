@@ -9,6 +9,7 @@
 use std::path::PathBuf;
 
 use crate::config::{ConfigError, Layer};
+use crate::render::RenderModel;
 
 /// One entry in a folder listing.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -25,9 +26,22 @@ pub enum Request {
     ListDir(PathBuf),
     /// Stop watching a folder the tree no longer shows (it was removed).
     Unwatch(PathBuf),
-    /// The user opened a file. Showing it in the panes comes with the
-    /// reader panes (phase 1 step 6).
-    OpenFile(PathBuf),
+    /// Read a file and build its render model, in a flavor (`None` for the
+    /// default), off the input loop.
+    OpenFile {
+        path: PathBuf,
+        flavor: Option<String>,
+    },
+}
+
+/// A file, read and parsed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Document {
+    pub path: PathBuf,
+    pub text: String,
+    pub model: RenderModel,
+    /// Read as Markdown. Other text files become one code block.
+    pub markdown: bool,
 }
 
 /// What background work reports back.
@@ -40,6 +54,11 @@ pub enum ServiceEvent {
     },
     /// These folders changed on disk.
     Changed(Vec<PathBuf>),
+    /// A file was read and parsed, or why it couldn't be.
+    Opened {
+        path: PathBuf,
+        result: Result<Document, String>,
+    },
     /// A config file changed on disk (or its folder appeared). The services
     /// read every layer again, off the input loop.
     ConfigChanged {

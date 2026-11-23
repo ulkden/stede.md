@@ -4,6 +4,7 @@
 //! Front ends draw this and nothing else. They never reach into the core's
 //! state, so the terminal and a native window draw the same thing.
 
+use crate::doc::LineKind;
 use crate::layout::{PaneId, PaneRect};
 use crate::modal::Modal;
 use crate::tree::TreeRow;
@@ -18,6 +19,8 @@ pub struct View<'a> {
     pub panes: Vec<PaneView>,
     /// The file tree pane's content.
     pub tree: TreeView,
+    /// The raw pane's content.
+    pub raw: RawView<'a>,
     /// Open modals, bottom first. Draw them all, top last.
     pub modals: Vec<&'a Modal>,
     /// The key bound to `modal.close`, for modal footers ("Esc to close").
@@ -45,6 +48,24 @@ pub struct StatusView {
     pub message: Option<String>,
     /// The file being viewed, if any.
     pub file: Option<String>,
+}
+
+/// What the raw pane shows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RawView<'a> {
+    /// The file's name, for the pane title.
+    pub title: Option<String>,
+    /// Lines from the top of the view, as many as fit unwrapped: each its
+    /// 1-based number, text and kind. Draw them in order, wrapping long ones,
+    /// until the pane is full.
+    pub lines: Vec<(usize, &'a str, LineKind)>,
+    /// Lines in the whole file, for the number column's width.
+    pub total: usize,
+    pub line_numbers: bool,
+    /// What to show instead of text: loading, an error, or no file open.
+    pub message: Option<String>,
+    /// Changes when the document is loaded again.
+    pub generation: u64,
 }
 
 /// What the file tree pane shows.

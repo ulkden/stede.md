@@ -9,7 +9,7 @@ use comrak::nodes::{AlertType, AstNode, ListDelimType, ListType, NodeValue, Tabl
 use comrak::{Arena, Options, parse_document};
 
 use crate::flavor::Flavor;
-use crate::model::{
+use stede_core::render::{
     AlertKind, Align, Block, BlockKind, Cell, Container, LineRange, Marker, RenderModel, Span,
     SpanStyle, Table,
 };

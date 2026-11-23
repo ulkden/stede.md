@@ -32,6 +32,7 @@ The STEDE model: the input loop owns state. Slow work (comrak parses, linters, t
 - [ ] **Timeouts** on external commands and LSP or linter processes that could hang. Child processes are killed on drop or shutdown.
 - [ ] **Clean shutdown:** quitting stops the watcher and linters, waits briefly for them, and restores the terminal even when a task is stuck.
 - [ ] **Shared state** across threads has correct `Send`/`Sync` bounds. Prefer message passing to shared mutable state.
+- [ ] **No feedback loops:** work the app does mustn't trigger itself. Reading a watched folder raises access events, and saving a watched file raises a change. Check which event kinds a watcher acts on, and test that a listing (or a write the app makes) doesn't ask for another (Critical: it spins in the background).
 
 ## Severity guide
 

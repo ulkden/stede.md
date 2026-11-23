@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! The render model: what the rendered pane draws, with no UI types.
 //!
+//! It lives in the core so every part shares it: `stede-markdown` builds it,
+//! the services carry it back from a worker, and front ends draw it.
+//!
 //! A document is a flat list of leaf [`Block`]s in reading order. Containers
 //! (block quotes, alerts, list items, footnotes) aren't blocks of their own;
 //! each leaf block lists the containers it sits in, outermost first, so a

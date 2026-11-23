@@ -10,13 +10,14 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::action::{Action, Registry};
+use crate::doc::Doc;
 use crate::io::{Request, ServiceEvent};
 use crate::key::{Key, format_keys};
 use crate::keymap::{Context, Keymap, Mode, Resolver, Scope, Step};
 use crate::layout::{Layout, LayoutOptions, PaneId};
 use crate::modal::{Modal, ModalBody, ModalStack, Row, Section};
 use crate::tree::Tree;
-use crate::view::{PaneView, STATUS_ROWS, StatusView, TreeView, View};
+use crate::view::{PaneView, RawView, STATUS_ROWS, StatusView, TreeView, View};
 
 /// Identifies the key cheat sheet among open modals, so its hotkey toggles it.
 const CHEAT_SHEET_ID: &str = "help.keys";
@@ -73,6 +74,15 @@ pub struct App {
     outbox: Vec<Request>,
     /// The file last opened from the tree (or on the command line).
     current_file: Option<PathBuf>,
+    /// The open document, once read.
+    doc: Option<Doc>,
+    /// Why the current file couldn't be opened, if it couldn't.
+    doc_error: Option<String>,
+    /// Loads so far, to tell front ends when the document changed.
+    loads: u64,
+    /// The Markdown flavor from config, passed with each open.
+    flavor: Option<String>,
+    line_numbers: bool,
 }
 
 impl App {
@@ -96,6 +106,11 @@ impl App {
             tree: Tree::default(),
             outbox: Vec::new(),
             current_file: options.file.clone(),
+            doc: None,
+            doc_error: None,
+            loads: 0,
+            flavor: None,
+            line_numbers: true,
         };
         if let Some(root) = options.root {
             let (tree, first) = Tree::new(root, options.file);
@@ -103,7 +118,22 @@ impl App {
             app.outbox.push(Request::ListDir(first));
         }
         app.apply_config(&options.config, &options.config_errors);
+        if let Some(file) = app.current_file.clone() {
+            app.request_open(file);
+        }
         app
+    }
+
+    fn request_open(&mut self, path: PathBuf) {
+        self.outbox.push(Request::OpenFile {
+            path,
+            flavor: self.flavor.clone(),
+        });
+    }
+
+    /// Rows the raw pane shows: the pane less its borders.
+    fn raw_height(&self) -> usize {
+        usize::from(self.panes_height().saturating_sub(2))
     }
 
     /// Applies a config: keys, timeout and tree side. Problems open in a
@@ -119,6 +149,8 @@ impl App {
         self.resolver.reset();
         self.key_timeout = config.key_timeout;
         self.layout.set_tree_side(config.tree_side);
+        self.line_numbers = config.line_numbers;
+        self.flavor = config.flavor.as_ref().map(|(name, _)| name.clone());
         self.config_problems = None;
         // A reload replaces the problems shown, or clears them once fixed.
         self.layout.modals_mut().remove(CONFIG_PROBLEMS_ID);
@@ -181,7 +213,52 @@ impl App {
                 for dir in self.tree.stale(&paths) {
                     self.outbox.push(Request::ListDir(dir));
                 }
+                // The open file changed on disk: read it again.
+                if let Some(file) = self.current_file.clone()
+                    && paths.contains(&file)
+                {
+                    self.request_open(file);
+                }
                 Handled::default()
+            }
+            ServiceEvent::Opened { path, result } => {
+                // Only the file asked for last counts; an older open that
+                // finishes late is dropped.
+                if self.current_file.as_ref() != Some(&path) {
+                    return Handled::default();
+                }
+                match result {
+                    Ok(document) => {
+                        self.loads += 1;
+                        // A reload keeps the reader's place.
+                        let top = self
+                            .doc
+                            .as_ref()
+                            .filter(|d| d.path == path)
+                            .map_or(0, |d| d.top);
+                        let mut doc = Doc::new(document, self.loads);
+                        doc.scroll_to(top);
+                        self.doc = Some(doc);
+                        self.doc_error = None;
+                    }
+                    Err(e) => {
+                        let name = path
+                            .file_name()
+                            .unwrap_or(path.as_os_str())
+                            .to_string_lossy();
+                        if self.doc.as_ref().is_some_and(|d| d.path == path) {
+                            // A failed reload keeps what was shown.
+                            self.message = Some(format!("couldn't reload {name}: {e}"));
+                        } else {
+                            self.doc = None;
+                            self.doc_error = Some(format!("can't open {name}: {e}"));
+                        }
+                    }
+                }
+                Handled {
+                    redraw: true,
+                    wait: false,
+                }
             }
             // Re-reading config files is the front end's job (it found them).
             ServiceEvent::ConfigChanged { .. } => Handled::default(),
@@ -372,6 +449,9 @@ impl App {
                 self.rescroll_tree();
             }
             "tree.open" => self.tree_open()?,
+            "view.down" | "view.up" | "view.half_down" | "view.half_up" | "view.page_down"
+            | "view.page_up" | "view.top" | "view.bottom" => self.scroll_raw(&action.name, times),
+            "line_numbers.toggle" => self.line_numbers = !self.line_numbers,
             "tree.close" => {
                 let rows = self.tree.rows();
                 if let Some(row) = self.tree.selected_index(&rows).map(|i| &rows[i]) {
@@ -410,6 +490,27 @@ impl App {
         self.layout.modals_mut().open(sheet);
     }
 
+    /// Scrolls the raw pane by lines, half pages or pages, or to an end.
+    fn scroll_raw(&mut self, name: &str, times: u32) {
+        let height = self.raw_height().max(1);
+        let Some(doc) = self.doc.as_mut() else {
+            return;
+        };
+        let n = times as usize;
+        let top = doc.top;
+        let target = match name {
+            "view.down" => top.saturating_add(n),
+            "view.up" => top.saturating_sub(n),
+            "view.half_down" => top.saturating_add(n * (height / 2).max(1)),
+            "view.half_up" => top.saturating_sub(n * (height / 2).max(1)),
+            "view.page_down" => top.saturating_add(n * height),
+            "view.page_up" => top.saturating_sub(n * height),
+            "view.top" => 0,
+            _ => usize::MAX,
+        };
+        doc.scroll_to(target);
+    }
+
     /// Opens the selected tree entry: a folder opens or closes, a file is
     /// handed to the services to load.
     fn tree_open(&mut self) -> Result<(), String> {
@@ -423,11 +524,10 @@ impl App {
             } else if let Some(dir) = self.tree.expand(&row.path) {
                 self.outbox.push(Request::ListDir(dir));
             }
-        } else {
+        } else if self.current_file.as_ref() != Some(&row.path) {
             self.current_file = Some(row.path.clone());
-            self.outbox.push(Request::OpenFile(row.path.clone()));
-            // Showing it in the panes arrives in phase 1 step 6.
-            self.message = Some(format!("{}: viewing files isn't built yet", row.name));
+            self.doc_error = None;
+            self.request_open(row.path.clone());
         }
         self.rescroll_tree();
         Ok(())
@@ -462,9 +562,38 @@ impl App {
             error: self.tree.root_error().map(str::to_owned),
             rows,
         };
+        let raw = match &self.doc {
+            Some(doc) => RawView {
+                title: doc
+                    .path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned()),
+                lines: (doc.top..doc.line_count())
+                    .take(self.raw_height())
+                    .filter_map(|i| doc.line(i).map(|l| (i + 1, l, doc.line_kind(i))))
+                    .collect(),
+                total: doc.line_count(),
+                line_numbers: self.line_numbers,
+                message: None,
+                generation: doc.generation,
+            },
+            None => RawView {
+                title: None,
+                lines: Vec::new(),
+                total: 0,
+                line_numbers: self.line_numbers,
+                message: Some(match (&self.doc_error, &self.current_file) {
+                    (Some(e), _) => e.clone(),
+                    (None, Some(_)) => "Loading…".to_owned(),
+                    (None, None) => "No file open: pick one in the file tree".to_owned(),
+                }),
+                generation: 0,
+            },
+        };
         View {
             panes,
             tree,
+            raw,
             modals: self.layout.modals().iter().collect(),
             close_key: self
                 .keymap
@@ -782,7 +911,10 @@ mod tests {
         press(&mut app, "<CR>");
         assert_eq!(
             app.take_requests(),
-            vec![Request::OpenFile("/p/docs/x.md".into())]
+            vec![Request::OpenFile {
+                path: "/p/docs/x.md".into(),
+                flavor: None
+            }]
         );
         assert_eq!(
             app.current_file(),
@@ -912,6 +1044,119 @@ mod tests {
             app.take_requests(),
             vec![Request::Unwatch("/p/docs".into())]
         );
+    }
+
+    fn document(path: &str, text: &str) -> crate::io::Document {
+        crate::io::Document {
+            path: path.into(),
+            text: text.into(),
+            model: crate::render::RenderModel::default(),
+            markdown: true,
+        }
+    }
+
+    fn opened(app: &mut App, path: &str, text: &str) {
+        app.handle_event(ServiceEvent::Opened {
+            path: path.into(),
+            result: Ok(document(path, text)),
+        });
+    }
+
+    #[test]
+    fn opening_a_file_shows_it_in_the_raw_pane() {
+        let mut app = App::new(AppOptions {
+            root: Some("/p".into()),
+            file: Some("/p/a.md".into()),
+            ..AppOptions::default()
+        });
+        let requests = app.take_requests();
+        assert!(requests.contains(&Request::OpenFile {
+            path: "/p/a.md".into(),
+            flavor: None
+        }));
+        assert_eq!(app.view().raw.message.as_deref(), Some("Loading…"));
+        opened(&mut app, "/p/a.md", "# Title\nbody\n");
+        let view = app.view();
+        assert_eq!(view.raw.title.as_deref(), Some("a.md"));
+        assert_eq!(
+            view.raw.lines.iter().map(|l| l.1).collect::<Vec<_>>(),
+            vec!["# Title", "body"]
+        );
+        assert_eq!(view.raw.lines[0].0, 1);
+    }
+
+    #[test]
+    fn a_late_open_for_another_file_is_dropped() {
+        let mut app = App::new(AppOptions {
+            file: Some("/p/b.md".into()),
+            ..AppOptions::default()
+        });
+        opened(&mut app, "/p/a.md", "old");
+        assert!(app.view().raw.lines.is_empty());
+    }
+
+    #[test]
+    fn raw_pane_scrolls_and_keeps_its_place_on_reload() {
+        let mut app = App::new(AppOptions {
+            file: Some("/p/a.md".into()),
+            ..AppOptions::default()
+        });
+        app.resize(80, 12);
+        let text: String = (1..=100).map(|i| format!("line {i}\n")).collect();
+        opened(&mut app, "/p/a.md", &text);
+        press(&mut app, "5j");
+        assert_eq!(app.view().raw.lines[0].0, 6);
+        press(&mut app, "<C-d>");
+        assert_eq!(
+            app.view().raw.lines[0].0,
+            10,
+            "half of the 9 rows the pane shows"
+        );
+        press(&mut app, "G");
+        assert_eq!(app.view().raw.lines[0].0, 100);
+        press(&mut app, "gg");
+        press(&mut app, "<C-f>");
+        assert_eq!(app.view().raw.lines[0].0, 10);
+        // A change on disk asks for it again; the new text keeps the place.
+        app.take_requests();
+        app.handle_event(ServiceEvent::Changed(vec!["/p/a.md".into()]));
+        assert_eq!(app.take_requests().len(), 1);
+        opened(&mut app, "/p/a.md", &text);
+        assert_eq!(app.view().raw.lines[0].0, 10);
+    }
+
+    #[test]
+    fn open_errors_show_in_the_pane_and_reload_errors_in_the_status() {
+        let mut app = App::new(AppOptions {
+            file: Some("/p/a.md".into()),
+            ..AppOptions::default()
+        });
+        app.handle_event(ServiceEvent::Opened {
+            path: "/p/a.md".into(),
+            result: Err("binary file".into()),
+        });
+        assert_eq!(
+            app.view().raw.message.as_deref(),
+            Some("can't open a.md: binary file")
+        );
+        opened(&mut app, "/p/a.md", "text");
+        app.handle_event(ServiceEvent::Opened {
+            path: "/p/a.md".into(),
+            result: Err("gone".into()),
+        });
+        assert_eq!(app.view().raw.lines.len(), 1, "what was shown stays");
+        assert_eq!(
+            app.view().status.message.as_deref(),
+            Some("couldn't reload a.md: gone")
+        );
+    }
+
+    #[test]
+    fn line_numbers_toggle() {
+        let mut app = App::new(AppOptions::default());
+        assert!(app.view().raw.line_numbers);
+        press(&mut app, "<leader>n");
+        assert!(!app.view().raw.line_numbers);
     }
 
     #[test]

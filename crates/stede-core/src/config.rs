@@ -108,6 +108,8 @@ pub struct Config {
     pub tree_side: TreeSide,
     /// The Markdown flavor, checked by the Markdown crate.
     pub flavor: Option<(String, Origin)>,
+    /// Whether the raw pane shows line numbers (`[editor.line_numbers]`).
+    pub line_numbers: bool,
     pub theme: Theme,
 }
 
@@ -119,6 +121,7 @@ impl Default for Config {
             bindings: Vec::new(),
             tree_side: TreeSide::Right,
             flavor: None,
+            line_numbers: true,
             theme: Theme::default(),
         }
     }
@@ -128,7 +131,6 @@ impl Default for Config {
 /// Every top-level table `docs/architecture.md` uses, so a config copied from
 /// it gets notes, not errors.
 const PLANNED_TOP: &[&str] = &[
-    "editor",
     "modal",
     "help",
     "commands",
@@ -272,6 +274,7 @@ impl LayerParser<'_> {
                 "flavor" => self.flavor(item, origin),
                 "theme" if item.is_str() => self.theme_name(item, &origin),
                 "theme" => self.theme(item, &origin),
+                "editor" => self.editor(item, &origin),
                 k if PLANNED_TOP.contains(&k) => {
                     self.note(&origin, "not built yet; this setting does nothing for now")
                 }
@@ -385,6 +388,48 @@ impl LayerParser<'_> {
                     self.note(&origin, "not built yet; this setting does nothing for now")
                 }
                 _ => self.error(&origin, "unknown key"),
+            }
+        }
+    }
+
+    fn editor(&mut self, item: &Item, origin: &Origin) {
+        let Some(table) = self.table(item, origin) else {
+            return;
+        };
+        for (key, item) in table.iter() {
+            let origin = self.origin(table, key, &format!("editor.{}", path_part(key)));
+            match key {
+                "line_numbers" => self.line_numbers(item, &origin),
+                _ => self.note(&origin, "not built yet; this setting does nothing for now"),
+            }
+        }
+    }
+
+    fn line_numbers(&mut self, item: &Item, origin: &Origin) {
+        let Some(table) = self.table(item, origin) else {
+            return;
+        };
+        for (key, item) in table.iter() {
+            let origin = self.origin(table, key, &format!("{}.{}", origin.key, path_part(key)));
+            match key {
+                "mode" => match self.string(item, &origin) {
+                    Some("off") => self.config.line_numbers = false,
+                    Some("absolute") => self.config.line_numbers = true,
+                    // Both count from the cursor, which arrives with editing.
+                    Some("relative" | "hybrid") => {
+                        self.config.line_numbers = true;
+                        self.note(
+                            &origin,
+                            "relative numbers need the cursor (phase 2); showing absolute",
+                        );
+                    }
+                    Some(other) => self.error(
+                        &origin,
+                        format!("{other:?}: expected off, absolute, relative or hybrid"),
+                    ),
+                    None => {}
+                },
+                _ => self.note(&origin, "not built yet; this setting does nothing for now"),
             }
         }
     }

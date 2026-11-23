@@ -10,7 +10,7 @@
 
 mod files;
 
-pub use files::list_dir;
+pub use files::{MAX_FILE_BYTES, list_dir, open_file};
 
 use std::collections::HashMap;
 use std::io;
@@ -121,8 +121,36 @@ impl Services {
                 self.runtime()
                     .spawn_blocking(move || shared.unwatch_dir(&dir));
             }
-            // Loading files into the panes comes with the reader panes.
-            Request::OpenFile(_) => {}
+            Request::OpenFile { path, flavor } => {
+                // One open per file at a time, like listings, so the newest
+                // read is the one reported last.
+                let key = PathBuf::from("\0open").join(&path);
+                {
+                    let mut inflight = self.shared.inflight.lock().expect("inflight lock");
+                    if let Some(again) = inflight.get_mut(&key) {
+                        *again = true;
+                        return;
+                    }
+                    inflight.insert(key.clone(), false);
+                }
+                let shared = Arc::clone(&self.shared);
+                self.runtime().spawn_blocking(move || {
+                    loop {
+                        let result = open_file(&path, flavor.as_deref());
+                        (shared.sink)(ServiceEvent::Opened {
+                            path: path.clone(),
+                            result,
+                        });
+                        let mut inflight = shared.inflight.lock().expect("inflight lock");
+                        if inflight.get(&key) == Some(&true) {
+                            inflight.insert(key.clone(), false);
+                        } else {
+                            inflight.remove(&key);
+                            return;
+                        }
+                    }
+                });
+            }
         }
     }
 

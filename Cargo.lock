@@ -1644,6 +1644,7 @@ dependencies = [
  "ignore",
  "notify",
  "stede-core",
+ "stede-markdown",
  "tokio",
 ]
 
@@ -1656,6 +1657,7 @@ dependencies = [
  "stede-core",
  "stede-markdown",
  "stede-services",
+ "unicode-width",
 ]
 
 [[package]]
