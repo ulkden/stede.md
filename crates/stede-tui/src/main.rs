@@ -114,7 +114,10 @@ fn open(path: Option<PathBuf>) -> io::Result<()> {
     let (config, config_errors) = load_config(path.as_deref());
     let theme = ui::Theme::from_core(
         &config.theme,
-        ui::ColorSupport::detect(std::env::var("COLORTERM").ok().as_deref()),
+        ui::ColorSupport::detect(
+            std::env::var("COLORTERM").ok().as_deref(),
+            std::env::var("TERM").ok().as_deref(),
+        ),
     );
     let mut app = App::new(AppOptions {
         layout: LayoutOptions {
@@ -139,6 +142,9 @@ fn open(path: Option<PathBuf>) -> io::Result<()> {
     result
 }
 
+/// Flavors in the plan (CLAUDE.md) that aren't built yet.
+const PLANNED_FLAVORS: &[&str] = &["obsidian", "mkdocs"];
+
 /// Reads the config layers for an opened path (or the current folder) and
 /// merges them. The flavor name is checked here, by the Markdown crate.
 fn load_config(path: Option<&std::path::Path>) -> (Config, Vec<ConfigError>) {
@@ -150,7 +156,13 @@ fn load_config(path: Option<&std::path::Path>) -> (Config, Vec<ConfigError>) {
     if let Some((name, origin)) = &config.flavor
         && let Err(e) = name.parse::<Flavor>()
     {
-        errors.push(origin.error(e));
+        // Flavors later in the plan are notes, like other planned settings.
+        let mut problem = origin.error(e);
+        if PLANNED_FLAVORS.contains(&name.to_ascii_lowercase().as_str()) {
+            problem.severity = config::Severity::Note;
+            problem.message = format!("the {name} flavor isn't built yet; using gfm");
+        }
+        errors.push(problem);
     }
     // Show paths under the home folder as `~/...`: shorter, and the same as
     // people write them. Every path a problem can name is rewritten, so one

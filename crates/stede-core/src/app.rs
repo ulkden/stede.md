@@ -54,6 +54,9 @@ pub struct App {
     quit: bool,
     /// The screen size the front end last reported, in cells.
     screen: (u16, u16),
+    /// The config problems found at start, kept so `config.problems` can
+    /// show them any time (other output modals can't push them out).
+    config_problems: Option<Modal>,
 }
 
 impl App {
@@ -74,6 +77,7 @@ impl App {
             key_timeout: options.config.key_timeout,
             quit: false,
             screen: (80, 24),
+            config_problems: None,
         };
         let all: Vec<&crate::config::ConfigError> =
             options.config_errors.iter().chain(&key_errors).collect();
@@ -81,25 +85,25 @@ impl App {
             use crate::config::Severity;
             let errors = all.iter().filter(|e| e.severity == Severity::Error).count();
             let notes = all.len() - errors;
-            let reopen = app
+            let show = app
                 .keymap
-                .keys_for(Mode::Normal, Scope::Global, "modal.reopen_last")
+                .keys_for(Mode::Normal, Scope::Global, "config.problems")
                 .map(|k| format_keys(&k))
-                .unwrap_or_else(|| "modal.reopen_last".into());
+                .unwrap_or_else(|| "config.problems".into());
             let modal = Modal::output("Config problems", ModalBody::Text(problem_lines(&all)));
             if errors > 0 {
                 // Errors mean config was skipped: show them at once.
                 app.notify(format!(
-                    "{errors} config error(s): {reopen} to reopen the list"
+                    "{errors} config error(s): {show} to see them again"
                 ));
-                app.layout.modals_mut().open(modal);
+                app.layout.modals_mut().open(modal.clone());
             } else {
                 // Notes only (settings not built yet): don't get in the way.
                 app.notify(format!(
-                    "{notes} config setting(s) not built yet: {reopen} to see them"
+                    "{notes} config setting(s) not built yet: {show} to see them"
                 ));
-                app.layout.modals_mut().stash(modal);
             }
+            app.config_problems = Some(modal);
         }
         app
     }
@@ -230,6 +234,13 @@ impl App {
             "modal.close_all" => {
                 self.layout.modals_mut().close_all();
             }
+            "config.problems" => match &self.config_problems {
+                Some(modal) => {
+                    let modal = modal.clone();
+                    self.layout.modals_mut().open(modal);
+                }
+                None => return Err("no config problems".into()),
+            },
             "modal.reopen_last" => {
                 if !self.layout.modals_mut().reopen_last() {
                     return Err("no output to reopen".into());
@@ -543,7 +554,8 @@ mod tests {
             message.starts_with("1 config setting(s) not built yet"),
             "{message}"
         );
-        press(&mut app, "<leader>o");
+        // Another output modal can't push the problems out of reach.
+        press(&mut app, "<F1><Esc><leader>c");
         assert_eq!(app.modals().top().unwrap().title, "Config problems");
     }
 

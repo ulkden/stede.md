@@ -41,15 +41,28 @@ pub enum ColorSupport {
     Truecolor,
     /// The xterm 256-color palette: RGB is shown as the nearest of those.
     Indexed256,
+    /// The 16 ANSI colors only (the Linux console, plain `xterm`).
+    Ansi16,
 }
 
 impl ColorSupport {
-    /// Truecolor if `COLORTERM` says so (`truecolor` or `24bit`), else 256
-    /// colors, which nearly every terminal has (Terminal.app among them).
-    pub fn detect(colorterm: Option<&str>) -> Self {
-        match colorterm.map(str::to_ascii_lowercase).as_deref() {
-            Some("truecolor" | "24bit") => ColorSupport::Truecolor,
-            _ => ColorSupport::Indexed256,
+    /// Truecolor if `COLORTERM` says so (`truecolor` or `24bit`); 16 colors
+    /// for terminals known to have only those (`TERM` of `linux`, `xterm`,
+    /// `vt100` and the like, or ending in `-16color`/`-8color`); else 256,
+    /// which nearly every terminal has (Terminal.app among them).
+    pub fn detect(colorterm: Option<&str>, term: Option<&str>) -> Self {
+        if matches!(
+            colorterm.map(str::to_ascii_lowercase).as_deref(),
+            Some("truecolor" | "24bit")
+        ) {
+            return ColorSupport::Truecolor;
+        }
+        let term = term.unwrap_or_default().to_ascii_lowercase();
+        let low = ["linux", "xterm", "vt100", "vt220", "ansi", "cons25", "dumb"];
+        if low.contains(&term.as_str()) || term.ends_with("-16color") || term.ends_with("-8color") {
+            ColorSupport::Ansi16
+        } else {
+            ColorSupport::Indexed256
         }
     }
 }
@@ -79,8 +92,38 @@ fn to_color(color: stede_core::theme::Color, support: ColorSupport) -> Color {
         C::Rgb(r, g, b) => match support {
             ColorSupport::Truecolor => Color::Rgb(r, g, b),
             ColorSupport::Indexed256 => Color::Indexed(nearest_256(r, g, b)),
+            ColorSupport::Ansi16 => Color::Indexed(nearest_16(r, g, b)),
         },
     }
+}
+
+/// The nearest of the 16 ANSI colors, by xterm's default values.
+fn nearest_16(r: u8, g: u8, b: u8) -> u8 {
+    const ANSI: [(u8, u8, u8); 16] = [
+        (0, 0, 0),
+        (205, 0, 0),
+        (0, 205, 0),
+        (205, 205, 0),
+        (0, 0, 238),
+        (205, 0, 205),
+        (0, 205, 205),
+        (229, 229, 229),
+        (127, 127, 127),
+        (255, 0, 0),
+        (0, 255, 0),
+        (255, 255, 0),
+        (92, 92, 255),
+        (255, 0, 255),
+        (0, 255, 255),
+        (255, 255, 255),
+    ];
+    let d = |a: u8, b: u8| (i32::from(a) - i32::from(b)).pow(2);
+    (0..16u8)
+        .min_by_key(|&i| {
+            let (x, y, z) = ANSI[usize::from(i)];
+            d(x, r) + d(y, g) + d(z, b)
+        })
+        .expect("sixteen colors")
 }
 
 /// The nearest xterm-256 color: the 6x6x6 cube (16-231) or the gray ramp
@@ -374,11 +417,29 @@ mod tests {
     #[test]
     fn colors_downgrade_without_truecolor() {
         assert_eq!(
-            ColorSupport::detect(Some("truecolor")),
+            ColorSupport::detect(Some("truecolor"), Some("xterm-kitty")),
             ColorSupport::Truecolor
         );
-        assert_eq!(ColorSupport::detect(Some("24BIT")), ColorSupport::Truecolor);
-        assert_eq!(ColorSupport::detect(None), ColorSupport::Indexed256);
+        assert_eq!(
+            ColorSupport::detect(Some("24BIT"), None),
+            ColorSupport::Truecolor
+        );
+        assert_eq!(
+            ColorSupport::detect(None, Some("xterm-256color")),
+            ColorSupport::Indexed256
+        );
+        assert_eq!(
+            ColorSupport::detect(None, Some("linux")),
+            ColorSupport::Ansi16
+        );
+        assert_eq!(
+            ColorSupport::detect(None, Some("rxvt-16color")),
+            ColorSupport::Ansi16
+        );
+        assert_eq!(nearest_16(250, 10, 10), 9);
+        assert_eq!(nearest_16(10, 10, 10), 0);
+        let t = Theme::from_core(&stede_core::theme::Theme::default(), ColorSupport::Ansi16);
+        assert!(matches!(t.accent, Color::Indexed(i) if i < 16));
         assert_eq!(nearest_256(0, 0, 0), 16);
         assert_eq!(nearest_256(255, 255, 255), 231);
         assert_eq!(nearest_256(255, 0, 0), 196);

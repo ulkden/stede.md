@@ -125,6 +125,8 @@ impl Default for Config {
 }
 
 /// Keys the design names that aren't built yet: accepted with a note.
+/// Every top-level table `docs/architecture.md` uses, so a config copied from
+/// it gets notes, not errors.
 const PLANNED_TOP: &[&str] = &[
     "editor",
     "modal",
@@ -135,6 +137,11 @@ const PLANNED_TOP: &[&str] = &[
     "profile",
     "profiles",
     "templates",
+    "format",
+    "layout",
+    "gui",
+    "plugins",
+    "flavors",
 ];
 const PLANNED_UI: &[&str] = &["animation", "font", "font_size"];
 
@@ -261,6 +268,9 @@ impl LayerParser<'_> {
                 "keys" => self.keys(item, &origin),
                 "ui" => self.ui(item, &origin),
                 "markdown" => self.markdown(item, &origin),
+                // The design doc writes both at the top level too.
+                "flavor" => self.flavor(item, origin),
+                "theme" if item.is_str() => self.theme_name(item, &origin),
                 "theme" => self.theme(item, &origin),
                 k if PLANNED_TOP.contains(&k) => {
                     self.note(&origin, "not built yet; this setting does nothing for now")
@@ -386,13 +396,29 @@ impl LayerParser<'_> {
         for (key, item) in table.iter() {
             let origin = self.origin(table, key, &format!("markdown.{}", path_part(key)));
             match key {
-                "flavor" => {
-                    if let Some(flavor) = self.string(item, &origin) {
-                        self.config.flavor = Some((flavor.to_owned(), origin));
-                    }
-                }
+                "flavor" => self.flavor(item, origin),
                 _ => self.error(&origin, "unknown key"),
             }
+        }
+    }
+
+    fn flavor(&mut self, item: &Item, origin: Origin) {
+        if let Some(flavor) = self.string(item, &origin) {
+            self.config.flavor = Some((flavor.to_owned(), origin));
+        }
+    }
+
+    fn theme_name(&mut self, item: &Item, origin: &Origin) {
+        match self.string(item, origin) {
+            Some(name) if BUILTIN_THEMES.contains(&name) => *self.theme_name = name.to_owned(),
+            Some(name) => self.error(
+                origin,
+                format!(
+                    "unknown theme {name:?}; built in: {}",
+                    BUILTIN_THEMES.join(", ")
+                ),
+            ),
+            None => {}
         }
     }
 
@@ -403,19 +429,7 @@ impl LayerParser<'_> {
         for (key, item) in table.iter() {
             let origin = self.origin(table, key, &format!("theme.{}", path_part(key)));
             match key {
-                "name" => match self.string(item, &origin) {
-                    Some(name) if BUILTIN_THEMES.contains(&name) => {
-                        *self.theme_name = name.to_owned()
-                    }
-                    Some(name) => self.error(
-                        &origin,
-                        format!(
-                            "unknown theme {name:?}; built in: {}",
-                            BUILTIN_THEMES.join(", ")
-                        ),
-                    ),
-                    None => {}
-                },
+                "name" => self.theme_name(item, &origin),
                 "colors" => self.colors(item, &origin),
                 _ => self.error(&origin, "unknown key"),
             }
@@ -453,8 +467,14 @@ fn parse_leader(value: &str) -> Result<Key, String> {
         .as_slice()
     {
         // 1-9 type a count in Normal mode, so `<leader>p` could never run.
-        [key] if key.digit().is_some_and(|d| d != 0) => Err(format!(
-            "{value:?}: the leader can't be 1-9, which type a count"
+        // Digits type counts (`0` continues one), so `3<leader>p` would break.
+        [key] if key.digit().is_some() => Err(format!(
+            "{value:?}: the leader can't be a digit, which types a count"
+        )),
+        // Esc closes modals and cancels pending keys; as a prefix it would make
+        // closing a modal wait for the key timeout.
+        [key] if *key == Key::plain(crate::key::KeyCode::Esc) => Err(format!(
+            "{value:?}: the leader can't be <Esc>, the close key"
         )),
         [key] => Ok(*key),
         _ => Err(format!("{value:?}: the leader must be a single key")),
@@ -464,8 +484,9 @@ fn parse_leader(value: &str) -> Result<Key, String> {
 /// The user config file: `$XDG_CONFIG_HOME/stede/config.toml`, else
 /// `$HOME/.config/stede/config.toml`. `env` looks up an environment variable.
 pub fn user_config_path(env: impl Fn(&str) -> Option<String>) -> Option<PathBuf> {
+    // The XDG spec says to ignore a relative XDG_CONFIG_HOME.
     let base = env("XDG_CONFIG_HOME")
-        .filter(|v| !v.is_empty())
+        .filter(|v| Path::new(v).is_absolute())
         .map(PathBuf::from)
         .or_else(|| {
             env("HOME")
@@ -480,7 +501,10 @@ pub fn user_config_path(env: impl Fn(&str) -> Option<String>) -> Option<PathBuf>
 pub fn project_dir(start: &Path) -> Option<PathBuf> {
     // Absolute first: the ancestors of a relative path such as `.` or `notes`
     // stop at the empty path and never reach the folders above it.
-    let absolute = std::fs::canonicalize(start).unwrap_or_else(|_| start.to_path_buf());
+    // `absolute`, not `canonicalize`: a symlinked folder inside a project
+    // should still find that project's `.stede/`, not the link target's.
+    let absolute =
+        lexical_normal(&std::path::absolute(start).unwrap_or_else(|_| start.to_path_buf()));
     let start = if absolute.is_file() {
         absolute.parent()?
     } else {
@@ -490,6 +514,25 @@ pub fn project_dir(start: &Path) -> Option<PathBuf> {
         .ancestors()
         .map(|dir| dir.join(".stede"))
         .find(|candidate| candidate.is_dir())
+}
+
+/// A path with `.` dropped and `..` applied to the part before it, without
+/// touching the file system (so symlinks are kept as written).
+fn lexical_normal(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() {
+                    out.push(c);
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 /// Config files in layer order, whether they exist or not.
@@ -612,14 +655,31 @@ mod tests {
         assert_eq!(
             messages(&errors),
             vec![
-                "c.toml:2: keys.leader: \"1\": the leader can't be 1-9, which type a count",
+                "c.toml:2: keys.leader: \"1\": the leader can't be a digit, which types a count",
                 "c.toml:3: keys.timeout_ms: must be 100 to 10000",
             ]
         );
         assert_eq!(c.leader, Key::char(' '));
-        let (c, errors) = Config::from_layers(&[layer("c.toml", "[keys]\nleader = \"0\"\n")]);
-        assert!(errors.is_empty(), "0 doesn't start a count");
-        assert_eq!(c.leader, Key::char('0'));
+        for bad in ["0", "<Esc>"] {
+            let (c, errors) =
+                Config::from_layers(&[layer("c.toml", &format!("[keys]\nleader = \"{bad}\"\n"))]);
+            assert_eq!(errors.len(), 1, "{bad}");
+            assert_eq!(c.leader, Key::char(' '));
+        }
+    }
+
+    #[test]
+    fn design_doc_shapes_are_accepted() {
+        let (c, errors) = Config::from_layers(&[layer(
+            "c.toml",
+            "flavor = \"commonmark\"\ntheme = \"light\"\n[format]\non_save = true\n[layout]\nx = 1\n[gui]\nfont = \"x\"\n[plugins]\n",
+        )]);
+        assert!(
+            errors.iter().all(|e| e.severity == Severity::Note),
+            "{errors:?}"
+        );
+        assert_eq!(c.flavor.as_ref().map(|f| f.0.as_str()), Some("commonmark"));
+        assert_eq!(c.theme.name(), "light");
     }
 
     #[test]
@@ -691,6 +751,11 @@ mod tests {
         assert_eq!(
             user_config_path(env(&[("XDG_CONFIG_HOME", ""), ("HOME", "/h")])),
             Some(PathBuf::from("/h/.config/stede/config.toml"))
+        );
+        assert_eq!(
+            user_config_path(env(&[("XDG_CONFIG_HOME", "cfg"), ("HOME", "/h")])),
+            Some(PathBuf::from("/h/.config/stede/config.toml")),
+            "a relative XDG_CONFIG_HOME is ignored"
         );
         assert_eq!(user_config_path(env(&[])), None);
     }

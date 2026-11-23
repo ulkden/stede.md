@@ -107,6 +107,11 @@ pub enum BindError {
     CountPrefix(String),
     /// An unbind (empty action) named keys that have no binding there.
     NotBound(String),
+    /// The action's arguments are wrong (`pane.toggle preview`).
+    BadArgs {
+        keys: String,
+        message: String,
+    },
     /// The action doesn't run in this mode (its registry entry says where it does).
     WrongMode {
         keys: String,
@@ -147,6 +152,7 @@ impl fmt::Display for BindError {
                 "keys {keys:?}: {} mode bindings can't be scoped to {scope}",
                 mode.name()
             ),
+            Self::BadArgs { keys, message } => write!(f, "keys {keys:?}: {message}"),
             Self::NotBound(keys) => write!(
                 f,
                 "keys {keys:?} aren't bound here, so there's nothing to unbind"
@@ -276,6 +282,12 @@ impl Keymap {
                 mode,
             });
         }
+        registry
+            .check_args(&action)
+            .map_err(|message| BindError::BadArgs {
+                keys: keys.to_owned(),
+                message,
+            })?;
         if mode == Mode::Probe && scope != Scope::Global {
             return Err(BindError::WrongScope {
                 keys: keys.to_owned(),
@@ -477,6 +489,7 @@ const DEFAULT_BINDINGS: &[(Mode, Scope, &str, &str)] = &[
     (Normal, Global, "<leader>?", "help.keys"),
     (Normal, Global, "<F1>", "help.keys"),
     (Normal, Global, "<leader>o", "modal.reopen_last"),
+    (Normal, Global, "<leader>c", "config.problems"),
     (Normal, Modal, "<Esc>", "modal.close"),
     (Normal, Modal, "<C-c>", "modal.close_all"),
     (Probe, Global, "qq", "probe.quit"),
@@ -801,6 +814,28 @@ mod tests {
             k.bind(Mode::Probe, Scope::Pane(PaneId::Raw), "q", "probe.quit", &r),
             Err(BindError::WrongScope { .. })
         ));
+    }
+
+    #[test]
+    fn bad_arguments_are_caught_at_bind_time() {
+        let r = Registry::with_builtins();
+        let mut k = Keymap::new(Key::char(' '));
+        assert!(matches!(
+            k.bind(Mode::Normal, Scope::Global, "x", "pane.toggle preview", &r),
+            Err(BindError::BadArgs { .. })
+        ));
+        assert!(matches!(
+            k.bind(Mode::Normal, Scope::Global, "x", "pane.toggle", &r),
+            Err(BindError::BadArgs { .. })
+        ));
+        assert!(matches!(
+            k.bind(Mode::Normal, Scope::Global, "x", "app.quit now", &r),
+            Err(BindError::BadArgs { .. })
+        ));
+        assert!(
+            k.bind(Mode::Normal, Scope::Global, "x", "pane.toggle tree", &r)
+                .is_ok()
+        );
     }
 
     #[test]
