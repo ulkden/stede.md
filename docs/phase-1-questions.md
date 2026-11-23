@@ -1,0 +1,9 @@
+# Phase 1: questions for the owner
+
+Collected during the autonomous phase 1 run. Each entry gives the question, the options, and what was done meanwhile.
+
+1. **MSRV policy.** Dependencies keep raising the minimum Rust version: ratatui 0.30.2 needs 1.88, and comrak 0.59 needs 1.89. Meanwhile each bump has followed what the dependency needs. Should the MSRV track "pinned toolchain minus N releases" instead, or be dropped for a binary-only app?
+2. **comrak 1.x.** 1.0.0 was released 2026-11-17, so it's eligible from 2026-12-01. Step 3 starts on 0.59.0, and Dependabot will propose the major bump. Is moving to 1.x once it's eligible fine?
+3. **Unicode-DFS-2016 on the license allow list.** comrak's dependency `finl_unicode` uses it. It's the permissive predecessor of Unicode-3.0, which is already allowed, and the FSF lists it as GPL-compatible. It was added to `deny.toml` with that reason in step 3's PR. Do you want it reviewed or kept?
+4. **The GFM spec in the repo.** The phase gate needs the spec's examples, so `gfm-spec.txt` (CC BY-SA 4.0) is vendored as test data under `crates/stede-markdown/tests/spec/`, with its source and license in a README there. It's never built into the binary, and BY-SA 4.0 is one-way compatible with GPLv3. The alternative is downloading it at test time, pinned by checksum. Is vendoring OK?
+5. **What "the GFM spec renders correctly" means for the gate.** Interim definition: for all 672 examples, no panics, valid source ranges, no text lost between comrak and the render model, and comrak's HTML (with our options) matching the spec's, apart from 17 listed exceptions that don't affect what the pane shows. The terminal drawing of each example gets checked by snapshots in step 6. Does that meet what you meant?

@@ -10,6 +10,10 @@ publish.workspace = true
 
 [dependencies]
 stede-core.workspace = true
+comrak.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
 
 [lints]
 workspace = true

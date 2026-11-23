@@ -1,0 +1,9 @@
+---
+source: crates/stede-markdown/tests/render.rs
+expression: "dump(&render(\"[^a]: unreferenced\\n\\n> q\\n>\\n> [^x]: in a quote\\n>\\n> after\\n\\nref[^x]\\n\",\nFlavor::Gfm))"
+---
+ 1-1  [footnote a] p "unreferenced"
+ 3-3  [quote] p "q"
+ 5-5  [quote > footnote x] p "in a quote"
+ 7-7  [quote] p "after"
+ 9-9  p "ref" [fn "[^x]" -> x]

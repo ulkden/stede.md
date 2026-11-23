@@ -13,13 +13,13 @@ Each step is one PR through the `stede-pr-review` loop. Tick a step when its PR 
   - Keys in Vim notation, the action registry, keymaps as data (counts, sequences, timeout)
   - The layout model: open, folded or off panes, focus moves, `focus_one`, geometry
   - The modal stack, the key cheat sheet built from the live keymap, and the core loop with its view model
-- [ ] **2. Terminal shell** (`stede-tui`: ratatui, crossterm)
+- [x] **2. Terminal shell** (`stede-tui`: ratatui, crossterm)
   - The event loop, drawing panes, strips, modals and the status line
   - Terminal restore on exit and on panic
   - `insta` snapshots on `TestBackend`
 - [ ] **3. Markdown render model** (`stede-markdown`: comrak)
   - A render model of blocks with style tokens and source line ranges, so scroll sync can map lines both ways
-  - The GFM spec examples as a test suite: the phase gate
+  - The GFM spec examples as a test suite: the phase gate (`crates/stede-markdown/tests/gfm_spec.rs`)
 - [ ] **4. Config and themes** (serde, toml)
   - Layers: defaults, user file, `.stede/config.toml`, `.stede/local.toml`, session `:set`
   - Errors carry file, line and key
