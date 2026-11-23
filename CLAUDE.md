@@ -71,7 +71,7 @@ Every PR Claude opens goes through the `stede-pr-review` skill (`.claude/skills/
 4. **Phase 3, Extend:** external commands and hooks, profiles, more flavors, templates, Steel plugins starting with the table builder. Gate: core API frozen.
 5. **Phase 4, Native window.**
 
-Current state: phase 0 scaffold. Nothing but crate stubs exists yet.
+Current state: phase 1 (reader) in progress. The step-by-step plan and its status are in `docs/phase-1.md`.
 
 ## Still open
 

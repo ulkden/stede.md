@@ -6,6 +6,16 @@
 //! crate: front ends send key events in and draw the view model that comes
 //! back. See `docs/architecture.md`.
 
+pub mod action;
+pub mod app;
+pub mod key;
+pub mod keymap;
+pub mod layout;
+pub mod modal;
+pub mod view;
+
+pub use app::{App, AppOptions, Handled};
+
 /// The app's display name.
 pub const APP_NAME: &str = "STEDE.md";
 
