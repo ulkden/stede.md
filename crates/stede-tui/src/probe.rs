@@ -13,6 +13,7 @@ use std::time::Instant;
 
 use ratatui::crossterm::event::{self, Event};
 use ratatui::crossterm::terminal;
+use ratatui::text::Line;
 use stede_core::action::Registry;
 use stede_core::key::{Key, format_keys};
 use stede_core::keymap::{Context, Keymap, Mode, Resolver, Scope, Step};
@@ -104,11 +105,11 @@ impl ProbeKeys {
         }
     }
 
-    /// The keys bound to `probe.quit`, in Vim notation.
-    fn quit_keys(&self) -> Option<String> {
+    /// The keys bound to `probe.quit`. Probe bindings are global only (the
+    /// keymap enforces it), so this is the scope the resolver uses too.
+    fn quit_keys(&self) -> Option<Vec<Key>> {
         self.keymap
             .keys_for(Mode::Probe, Scope::Global, "probe.quit")
-            .map(|keys| format_keys(&keys))
     }
 
     fn press(&mut self, key: Key) -> Probe {
@@ -139,6 +140,12 @@ pub fn run() -> io::Result<()> {
     let quit = keys.quit_keys().ok_or_else(|| {
         io::Error::other("no key is bound to probe.quit, so the probe couldn't be left")
     })?;
+    // A sequence must come within the key timeout; a single key needn't say so.
+    let quit_hint = if quit.len() > 1 {
+        format!("{} in quick succession", format_keys(&quit))
+    } else {
+        format_keys(&quit)
+    };
     let mut out = io::stdout();
     writeln!(
         out,
@@ -152,7 +159,7 @@ pub fn run() -> io::Result<()> {
     writeln!(
         out,
         "Keys: press <C-w>, <C-h>, <C-l>, <F1>, <Esc>, <S-Tab>, <A-x> and check each shows as named.\n\
-         Press {quit} in quick succession to quit."
+         Press {quit_hint} to quit."
     )?;
     out.flush()?;
 
@@ -199,8 +206,14 @@ fn echo_keys(out: &mut impl Write, keys: &mut ProbeKeys) -> io::Result<()> {
             Some(Event::Key(ev)) => {
                 let key = to_key(ev);
                 let seen = key.map_or_else(|| "(ignored)".to_owned(), |k| k.to_string());
+                // Pad by display width so CJK and emoji keys line up.
+                let pad = 12usize.saturating_sub(Line::raw(seen.as_str()).width());
                 // Raw mode: move to column 0 ourselves.
-                write!(out, "\r{:<12} {:?} {:?}\r\n", seen, ev.code, ev.modifiers)?;
+                write!(
+                    out,
+                    "\r{seen}{:pad$} {:?} {:?}\r\n",
+                    "", ev.code, ev.modifiers
+                )?;
                 out.flush()?;
                 key.map(|k| keys.press(k))
             }
@@ -222,7 +235,10 @@ mod tests {
     #[test]
     fn quit_goes_through_the_probe_keymap() {
         let mut keys = ProbeKeys::new();
-        assert_eq!(keys.quit_keys().as_deref(), Some("qq"));
+        assert_eq!(
+            keys.quit_keys().map(|k| format_keys(&k)).as_deref(),
+            Some("qq")
+        );
         assert_eq!(keys.press(Key::char('q')), Probe::Wait);
         assert_eq!(keys.press(Key::char('q')), Probe::Quit);
         // Anything else in between resets the sequence.

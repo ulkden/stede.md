@@ -105,10 +105,17 @@ pub enum BindError {
     UnknownAction(String),
     /// Normal-mode keys can't start with `1`-`9`: those type a count.
     CountPrefix(String),
-    /// `probe.*` actions bind only in probe mode, and probe mode binds only
-    /// those: each side can't run the other's actions.
+    /// The action doesn't run in this mode (its registry entry says where it does).
     WrongMode {
+        keys: String,
         action: String,
+        mode: Mode,
+        runs_in: Vec<Mode>,
+    },
+    /// Probe mode has no panes or modals: its bindings are global only.
+    WrongScope {
+        keys: String,
+        scope: Scope,
         mode: Mode,
     },
 }
@@ -119,9 +126,23 @@ impl fmt::Display for BindError {
             Self::Keys(keys, e) => write!(f, "bad keys {keys:?}: {e}"),
             Self::EmptyAction(keys) => write!(f, "keys {keys:?} are bound to an empty action"),
             Self::UnknownAction(name) => write!(f, "unknown action {name:?}"),
-            Self::WrongMode { action, mode } => write!(
+            Self::WrongMode {
+                keys,
+                action,
+                mode,
+                runs_in,
+            } => {
+                let modes: Vec<&str> = runs_in.iter().map(|m| m.name()).collect();
+                write!(
+                    f,
+                    "keys {keys:?}: {action:?} doesn't run in {} mode (it runs in: {})",
+                    mode.name(),
+                    modes.join(", ")
+                )
+            }
+            Self::WrongScope { keys, scope, mode } => write!(
                 f,
-                "{action:?} can't be bound in {} mode (probe.* actions belong to probe mode)",
+                "keys {keys:?}: {} mode bindings can't be scoped to {scope}",
                 mode.name()
             ),
             Self::CountPrefix(keys) => write!(
@@ -182,12 +203,21 @@ impl Keymap {
             parse_keys(keys, Some(self.leader)).map_err(|e| BindError::Keys(keys.to_owned(), e))?;
         let action =
             Action::parse(action).ok_or_else(|| BindError::EmptyAction(keys.to_owned()))?;
-        if !registry.contains(&action.name) {
+        let Some(spec) = registry.get(&action.name) else {
             return Err(BindError::UnknownAction(action.name));
-        }
-        if action.name.starts_with("probe.") != (mode == Mode::Probe) {
+        };
+        if !spec.modes.contains(&mode) {
             return Err(BindError::WrongMode {
+                keys: keys.to_owned(),
+                runs_in: spec.modes.to_vec(),
                 action: action.name,
+                mode,
+            });
+        }
+        if mode == Mode::Probe && scope != Scope::Global {
+            return Err(BindError::WrongScope {
+                keys: keys.to_owned(),
+                scope,
                 mode,
             });
         }
@@ -670,27 +700,45 @@ mod tests {
     }
 
     #[test]
-    fn probe_actions_bind_only_in_probe_mode() {
-        let r = Registry::with_builtins();
+    fn actions_bind_only_in_the_modes_they_run_in() {
+        let mut r = Registry::with_builtins();
         let mut k = Keymap::new(Key::char(' '));
-        assert_eq!(
+        assert!(matches!(
             k.bind(Mode::Normal, Scope::Global, "Q", "probe.quit", &r),
             Err(BindError::WrongMode {
-                action: "probe.quit".into(),
-                mode: Mode::Normal
+                mode: Mode::Normal,
+                ..
             })
-        );
+        ));
+        let err = k
+            .bind(Mode::Probe, Scope::Global, "x", "app.quit", &r)
+            .unwrap_err();
         assert_eq!(
-            k.bind(Mode::Probe, Scope::Global, "x", "app.quit", &r),
-            Err(BindError::WrongMode {
-                action: "app.quit".into(),
-                mode: Mode::Probe
-            })
+            err.to_string(),
+            "keys \"x\": \"app.quit\" doesn't run in probe mode (it runs in: normal)"
         );
         assert!(
             k.bind(Mode::Probe, Scope::Global, "<C-q>", "probe.quit", &r)
                 .is_ok()
         );
+        // A user command named probe.* is an editor command like any other:
+        // modes come from the registry, not the name.
+        r.register("probe.colors", "Show colors", crate::action::Source::User)
+            .unwrap();
+        assert!(
+            k.bind(Mode::Normal, Scope::Global, "gc", "probe.colors", &r)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn probe_bindings_are_global_only() {
+        let r = Registry::with_builtins();
+        let mut k = Keymap::new(Key::char(' '));
+        assert!(matches!(
+            k.bind(Mode::Probe, Scope::Pane(PaneId::Raw), "q", "probe.quit", &r),
+            Err(BindError::WrongScope { .. })
+        ));
     }
 
     #[test]
