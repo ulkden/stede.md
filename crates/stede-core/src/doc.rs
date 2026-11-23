@@ -4,6 +4,7 @@
 //! The reader keeps the text as a `String` with the start of every line;
 //! the rope buffer arrives with editing (phase 2).
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::io::Document;
@@ -58,8 +59,14 @@ pub struct Doc {
     /// Whether it was read as Markdown (else as one code block).
     pub markdown: bool,
     starts: Vec<usize>,
-    /// The first line the raw pane shows, 0-based.
-    pub top: usize,
+    /// The first line the raw pane shows, 0-based, and how many of its
+    /// wrapped rows are scrolled past: a line taller than the pane can be
+    /// read to its end.
+    top: usize,
+    top_row: usize,
+    /// Rows each line wraps to, at the width they were counted for, so a
+    /// long line isn't scanned again on every key.
+    rows: HashMap<usize, (usize, usize)>,
     /// Bumped on every load, so front ends know to redo cached layout.
     pub generation: u64,
 }
@@ -74,8 +81,89 @@ impl Doc {
             markdown: document.markdown,
             starts,
             top: 0,
+            top_row: 0,
+            rows: HashMap::new(),
             generation,
         }
+    }
+
+    /// Where the raw pane starts: a line (0-based) and a row within it.
+    pub fn position(&self) -> (usize, usize) {
+        (self.top, self.top_row)
+    }
+
+    /// Rows line `i` wraps to at `width`.
+    pub fn rows(&mut self, i: usize, width: usize) -> usize {
+        if let Some(&(w, n)) = self.rows.get(&i)
+            && w == width
+        {
+            return n;
+        }
+        let n = self.line(i).map_or(1, |l| crate::text::row_count(l, width));
+        self.rows.insert(i, (width, n));
+        n
+    }
+
+    /// The furthest position that still fills a pane `height` rows tall, so
+    /// the last page stays full (Vim's `G` keeps the last line at the bottom).
+    pub fn max_position(&mut self, width: usize, height: usize) -> (usize, usize) {
+        let height = height.max(1);
+        let mut below = 0;
+        for i in (0..self.line_count()).rev() {
+            let r = self.rows(i, width);
+            if below + r >= height {
+                return (i, below + r - height);
+            }
+            below += r;
+        }
+        (0, 0)
+    }
+
+    /// Moves to a position, kept between the top and the last full page.
+    pub fn set_position(&mut self, line: usize, row: usize, width: usize, height: usize) {
+        let line = line.min(self.line_count().saturating_sub(1));
+        let row = row.min(self.rows(line, width).saturating_sub(1));
+        let max = self.max_position(width, height);
+        (self.top, self.top_row) = (line, row).min(max);
+    }
+
+    /// Scrolls by `delta` wrapped rows.
+    pub fn scroll_rows(&mut self, delta: isize, width: usize, height: usize) {
+        let (mut line, mut row) = (self.top, self.top_row);
+        if delta >= 0 {
+            let mut left = delta.unsigned_abs();
+            while left > 0 {
+                let here = self.rows(line, width);
+                if row + 1 < here {
+                    // Move within the line, as far as this step allows.
+                    let step = left.min(here - 1 - row);
+                    row += step;
+                    left -= step;
+                } else if line + 1 < self.line_count() {
+                    line += 1;
+                    row = 0;
+                    left -= 1;
+                } else {
+                    break;
+                }
+            }
+        } else {
+            let mut left = delta.unsigned_abs();
+            while left > 0 {
+                if row > 0 {
+                    let step = left.min(row);
+                    row -= step;
+                    left -= step;
+                } else if line > 0 {
+                    line -= 1;
+                    row = self.rows(line, width) - 1;
+                    left -= 1;
+                } else {
+                    break;
+                }
+            }
+        }
+        self.set_position(line, row, width, height);
     }
 
     pub fn line_count(&self) -> usize {
@@ -93,6 +181,7 @@ impl Doc {
     /// Scrolls so `top` is the first line, kept in the document.
     pub fn scroll_to(&mut self, top: usize) {
         self.top = top.min(self.line_count().saturating_sub(1));
+        self.top_row = 0;
     }
 
     /// How line `i` (0-based) is colored.
@@ -201,6 +290,36 @@ mod tests {
     fn scrolling_stays_in_the_document() {
         let mut d = doc("a\nb\nc", vec![]);
         d.scroll_to(99);
-        assert_eq!(d.top, 2);
+        assert_eq!(d.position(), (2, 0));
+    }
+
+    #[test]
+    fn scrolls_by_rows_through_a_line_taller_than_the_pane() {
+        // One 50-cell line at width 10 is 5 rows; the pane shows 2.
+        let mut d = doc(&format!("{}\nend", "x".repeat(50)), vec![]);
+        d.scroll_rows(1, 10, 2);
+        assert_eq!(d.position(), (0, 1));
+        d.scroll_rows(3, 10, 2);
+        assert_eq!(
+            d.position(),
+            (0, 4),
+            "the line's last row, then `end` below it"
+        );
+        d.scroll_rows(9, 10, 2);
+        assert_eq!(d.position(), (0, 4), "the last page stays full");
+        d.scroll_rows(-2, 10, 2);
+        assert_eq!(d.position(), (0, 2));
+    }
+
+    #[test]
+    fn the_last_page_stays_full() {
+        let text: String = (1..=10).map(|i| format!("{i}\n")).collect();
+        let mut d = doc(&text, vec![]);
+        assert_eq!(d.max_position(80, 4), (6, 0));
+        d.set_position(99, 0, 80, 4);
+        assert_eq!(d.position(), (6, 0));
+        // A file shorter than the pane never scrolls.
+        let mut short = doc("a\nb", vec![]);
+        assert_eq!(short.max_position(80, 4), (0, 0));
     }
 }

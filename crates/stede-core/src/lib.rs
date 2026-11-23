@@ -16,6 +16,7 @@ pub mod keymap;
 pub mod layout;
 pub mod modal;
 pub mod render;
+pub mod text;
 pub mod theme;
 pub mod tree;
 pub mod view;

@@ -140,7 +140,7 @@ impl Services {
                 self.runtime().spawn_blocking(move || {
                     let mut flavor = flavor;
                     loop {
-                        let result = open_file(&path, flavor.as_deref());
+                        let result = guarded(|| open_file(&path, flavor.as_deref()));
                         (shared.sink)(ServiceEvent::Opened {
                             path: path.clone(),
                             result,
@@ -196,7 +196,7 @@ impl Shared {
             // Watch first, so a change during the listing isn't missed; and
             // every time, so a folder deleted and made again is watched again.
             self.watch_dir(&dir);
-            let result = list_dir(&dir);
+            let result = guarded(|| list_dir(&dir));
             (self.sink)(ServiceEvent::Listed {
                 dir: dir.clone(),
                 result,
@@ -280,6 +280,14 @@ impl Shared {
         names.extend(mapped.into_iter().map(|(_, p)| p));
         names
     }
+}
+
+/// Runs a read, turning a panic (a parser bug on odd input, say) into an
+/// error, so its in-flight entry is cleared and the path can be tried again.
+fn guarded<T>(read: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(read)).unwrap_or_else(|_| {
+        Err("an internal error stopped the read (a bug; please report it)".into())
+    })
 }
 
 /// Collects raw watcher events and reports them in batches: the paths that
@@ -514,18 +522,20 @@ mod tests {
             services.handle(Request::ListDir(dir.clone()));
             std::thread::sleep(Duration::from_millis(100));
         }
-        // The regression: reading the folder (an access) reported the folder
-        // itself as changed, so every listing asked for another.
-        let mut folder_changed = false;
+        // The regression: reading the folder (an access) reported it changed,
+        // so every listing asked for another. Opening a file in it mustn't
+        // either (that would reload it forever).
+        services.handle(Request::OpenFile {
+            path: dir.join("a.md"),
+            flavor: None,
+        });
+        let mut changed = Vec::new();
         while let Ok(e) = rx.recv_timeout(Duration::from_millis(600)) {
             if let ServiceEvent::Changed(paths) = e {
-                folder_changed |= paths.contains(&dir);
+                changed.extend(paths.into_iter().filter(|p| p.starts_with(&dir)));
             }
         }
-        assert!(
-            !folder_changed,
-            "listing a folder must not report it changed"
-        );
+        assert!(changed.is_empty(), "reads reported as changes: {changed:?}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -546,6 +556,12 @@ mod tests {
             Ok(ServiceEvent::Changed(_))
         ));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_panicking_read_is_an_error_not_a_stuck_path() {
+        let result: Result<(), String> = guarded(|| panic!("boom"));
+        assert!(result.unwrap_err().contains("internal error"));
     }
 
     #[test]

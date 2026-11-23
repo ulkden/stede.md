@@ -287,4 +287,12 @@ fn footnotes_stay_where_they_are_written() {
     let model = render("[^a]: first\n\nbody[^a]\n", Flavor::Gfm);
     let starts: Vec<usize> = model.blocks.iter().map(|b| b.source.start).collect();
     assert_eq!(starts, vec![1, 3]);
+    // Defined mid-file, with blocks after it: still in source order, which
+    // line lookups (raw-pane colors, scroll sync) binary-search on.
+    let model = render(
+        "Text[^1]\n\n[^1]: note\n\n# Heading\n\n```\ncode\n```\n",
+        Flavor::Gfm,
+    );
+    let starts: Vec<usize> = model.blocks.iter().map(|b| b.source.start).collect();
+    assert_eq!(starts, vec![1, 3, 5, 7]);
 }

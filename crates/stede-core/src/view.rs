@@ -59,6 +59,13 @@ pub struct RawView<'a> {
     /// 1-based number, text and kind. Draw them in order, wrapping long ones,
     /// until the pane is full.
     pub lines: Vec<(usize, &'a str, LineKind)>,
+    /// Wrapped rows of the first line already scrolled past: start drawing it
+    /// from this row.
+    pub first_row: usize,
+    /// The number column's width (0 for none) and the text's width, in
+    /// cells: draw with these so rows break where scrolling counts them.
+    pub gutter: usize,
+    pub text_width: usize,
     /// Lines in the whole file, for the number column's width.
     pub total: usize,
     pub line_numbers: bool,

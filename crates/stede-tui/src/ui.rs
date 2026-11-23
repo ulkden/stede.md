@@ -13,6 +13,7 @@ use ratatui::widgets::{Block, Clear, Paragraph};
 use stede_core::doc::LineKind;
 use stede_core::layout::PaneId;
 use stede_core::modal::{self, Modal, ModalBody};
+use stede_core::text::wrap_rows;
 use stede_core::view::{PaneView, RawView, STATUS_ROWS, TreeView, View};
 
 /// The shell's colors, taken from the core's theme slots.
@@ -237,46 +238,6 @@ fn draw_pane(frame: &mut Frame, area: Rect, pane: &PaneView, view: &View, theme:
     }
 }
 
-/// Columns a tab advances to (a multiple of this).
-const TAB_STOP: usize = 4;
-
-/// Splits a line into pieces at most `width` cells wide, by display width,
-/// with tabs expanded. Always at least one piece, so an empty line takes a row.
-pub(crate) fn wrap(line: &str, width: usize) -> Vec<String> {
-    use unicode_width::UnicodeWidthChar;
-    let width = width.max(1);
-    let mut rows = vec![String::new()];
-    let mut col = 0;
-    // The column in the whole line, which tab stops count from (rows wrap).
-    let mut line_col = 0;
-    for c in line.chars() {
-        if c == '\t' {
-            let spaces = TAB_STOP - line_col % TAB_STOP;
-            line_col += spaces;
-            for _ in 0..spaces {
-                if col == width {
-                    rows.push(String::new());
-                    col = 0;
-                }
-                rows.last_mut().expect("a row").push(' ');
-                col += 1;
-            }
-            continue;
-        }
-        // Control characters would move the cursor: show them as a symbol.
-        let shown = if c.is_control() { '\u{FFFD}' } else { c };
-        let w = UnicodeWidthChar::width(shown).unwrap_or(0);
-        if col + w > width && col > 0 {
-            rows.push(String::new());
-            col = 0;
-        }
-        rows.last_mut().expect("a row").push(shown);
-        col += w;
-        line_col += w;
-    }
-    rows
-}
-
 /// The raw pane: the file's lines from the top of the view, wrapped to the
 /// pane, with an optional number column; each line colored by its block.
 fn draw_raw(frame: &mut Frame, area: Rect, raw: &RawView, theme: &Theme) {
@@ -290,29 +251,24 @@ fn draw_raw(frame: &mut Frame, area: Rect, raw: &RawView, theme: &Theme) {
         );
         return;
     }
-    let gutter = if raw.line_numbers {
-        raw.total.max(1).to_string().len() + 1
-    } else {
-        0
-    };
-    // With a pane narrower than the gutter, drop the numbers.
-    let gutter = if usize::from(area.width) > gutter + 1 {
-        gutter
-    } else {
-        0
-    };
-    let text_width = usize::from(area.width) - gutter;
+    // The core gives the columns, so rows break where its scrolling counts
+    // them; a pane drawn narrower than that (it can't be, but) just clips.
+    let gutter = raw.gutter;
+    let text_width = raw.text_width.max(1);
     let height = usize::from(area.height);
     let mut lines: Vec<Line> = Vec::with_capacity(height);
-    'fill: for (number, text, kind) in &raw.lines {
+    for (i, (number, text, kind)) in raw.lines.iter().enumerate() {
+        if lines.len() == height {
+            break;
+        }
         let style = line_style(*kind, theme);
-        for (i, row) in wrap(text, text_width).into_iter().enumerate() {
-            if lines.len() == height {
-                break 'fill;
-            }
+        // The first line may be scrolled into; only the rows that fit are built.
+        let skip = if i == 0 { raw.first_row } else { 0 };
+        let rows = wrap_rows(text, text_width, skip, height - lines.len());
+        for (r, row) in rows.into_iter().enumerate() {
             let mut spans = Vec::with_capacity(2);
             if gutter > 0 {
-                let label = if i == 0 {
+                let label = if r + skip == 0 {
                     number.to_string()
                 } else {
                     String::new()
@@ -692,18 +648,6 @@ mod tests {
     }
 
     #[test]
-    fn wrapping_counts_display_width_and_expands_tabs() {
-        assert_eq!(wrap("", 5), vec![""]);
-        assert_eq!(wrap("abcdefg", 3), vec!["abc", "def", "g"]);
-        // A wide character that doesn't fit moves to the next row whole.
-        assert_eq!(wrap("ab日本", 3), vec!["ab", "日", "本"]);
-        assert_eq!(wrap("\tx", 8), vec!["    x"]);
-        assert_eq!(wrap("a\u{7}b", 8), vec!["a\u{FFFD}b"]);
-        // Tab stops count from the start of the line, not of the row.
-        assert_eq!(wrap("abcdefg\tx", 6), vec!["abcdef", "g x"]);
-    }
-
-    #[test]
     fn raw_pane_with_numbers_wrapping_and_kinds() {
         use stede_core::io::{Document, ServiceEvent};
         let mut app = App::new(AppOptions {
@@ -722,6 +666,34 @@ mod tests {
             }),
         });
         insta::assert_snapshot!(render(&mut app, 70, 12));
+    }
+
+    #[test]
+    fn a_line_taller_than_the_pane_scrolls_by_rows() {
+        use stede_core::io::{Document, ServiceEvent};
+        let mut app = App::new(AppOptions {
+            file: Some("/n/a.md".into()),
+            ..AppOptions::default()
+        });
+        let text = format!(
+            "{}\nend\n",
+            (0..40)
+                .map(|i| format!("w{i:02}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        app.handle_event(ServiceEvent::Opened {
+            path: "/n/a.md".into(),
+            result: Ok(Document {
+                path: "/n/a.md".into(),
+                model: stede_markdown::render(&text, stede_markdown::Flavor::Gfm),
+                text,
+                markdown: true,
+            }),
+        });
+        app.resize(40, 7);
+        press(&mut app, "3j");
+        insta::assert_snapshot!(render(&mut app, 40, 7));
     }
 
     #[test]

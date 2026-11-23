@@ -108,7 +108,8 @@ impl App {
             config_problems: None,
             tree: Tree::default(),
             outbox: Vec::new(),
-            current_file: options.file.clone(),
+            // Set after config is applied, so start-up asks for it once.
+            current_file: None,
             doc: None,
             doc_error: None,
             loads: 0,
@@ -117,12 +118,13 @@ impl App {
             config_line_numbers: None,
         };
         if let Some(root) = options.root {
-            let (tree, first) = Tree::new(root, options.file);
+            let (tree, first) = Tree::new(root, options.file.clone());
             app.tree = tree;
             app.outbox.push(Request::ListDir(first));
         }
         app.apply_config(&options.config, &options.config_errors);
-        if let Some(file) = app.current_file.clone() {
+        if let Some(file) = options.file {
+            app.current_file = Some(file.clone());
             app.request_open(file);
         }
         app
@@ -138,6 +140,26 @@ impl App {
     /// Rows the raw pane shows: the pane less its borders.
     fn raw_height(&self) -> usize {
         usize::from(self.panes_height().saturating_sub(2))
+    }
+
+    /// The raw pane's number column and text width, in cells. The front end
+    /// draws with these, so its rows break where scrolling counts them.
+    fn raw_columns(&self) -> (usize, usize) {
+        let inner = self
+            .layout
+            .geometry(self.screen.0)
+            .into_iter()
+            .find(|r| r.id == PaneId::Raw && !r.folded)
+            .map_or(0, |r| usize::from(r.width.saturating_sub(2)));
+        let total = self.doc.as_ref().map_or(1, Doc::line_count);
+        let gutter = if self.line_numbers {
+            total.max(1).to_string().len() + 1
+        } else {
+            0
+        };
+        // A pane narrower than the gutter drops the numbers.
+        let gutter = if inner > gutter + 1 { gutter } else { 0 };
+        (gutter, inner.saturating_sub(gutter).max(1))
     }
 
     /// Applies a config: keys, timeout and tree side. Problems open in a
@@ -161,10 +183,9 @@ impl App {
         let flavor_changed = flavor != self.flavor;
         self.flavor = flavor;
         // A new flavor parses the open file differently: read it again.
-        if flavor_changed
-            && let Some(file) = self.current_file.clone()
-            && self.doc.is_some()
-        {
+        // Also while it's still loading: that read used the old flavor (the
+        // services fold the new request into it).
+        if flavor_changed && let Some(file) = self.current_file.clone() {
             self.request_open(file);
         }
         self.config_problems = None;
@@ -247,14 +268,17 @@ impl App {
                     Ok(document) => {
                         self.loads += 1;
                         // A reload keeps the reader's place.
-                        let top = self
+                        let place = self
                             .doc
                             .as_ref()
                             .filter(|d| d.path == path)
-                            .map_or(0, |d| d.top);
-                        let mut doc = Doc::new(document, self.loads);
-                        doc.scroll_to(top);
-                        self.doc = Some(doc);
+                            .map_or((0, 0), Doc::position);
+                        self.doc = Some(Doc::new(document, self.loads));
+                        let (_, width) = self.raw_columns();
+                        let height = self.raw_height();
+                        if let Some(doc) = self.doc.as_mut() {
+                            doc.set_position(place.0, place.1, width, height);
+                        }
                         self.doc_error = None;
                     }
                     Err(e) => {
@@ -512,23 +536,30 @@ impl App {
     /// With a count, `gg` and `G` go to that line, as in Vim (`50G`).
     fn scroll_raw(&mut self, name: &str, times: u32, count: Option<u32>) {
         let height = self.raw_height().max(1);
+        let (_, width) = self.raw_columns();
         let Some(doc) = self.doc.as_mut() else {
             return;
         };
-        let n = times as usize;
-        let top = doc.top;
-        let target = match name {
-            "view.down" => top.saturating_add(n),
-            "view.up" => top.saturating_sub(n),
-            "view.half_down" => top.saturating_add(n * (height / 2).max(1)),
-            "view.half_up" => top.saturating_sub(n * (height / 2).max(1)),
-            "view.page_down" => top.saturating_add(n * height),
-            "view.page_up" => top.saturating_sub(n * height),
-            "view.top" | "view.bottom" if count.is_some() => n.saturating_sub(1),
-            "view.top" => 0,
-            _ => usize::MAX,
-        };
-        doc.scroll_to(target);
+        let n = times as isize;
+        let half = (height / 2).max(1) as isize;
+        // Lines, half pages and pages move by wrapped rows.
+        match name {
+            "view.down" => doc.scroll_rows(n, width, height),
+            "view.up" => doc.scroll_rows(-n, width, height),
+            "view.half_down" => doc.scroll_rows(n * half, width, height),
+            "view.half_up" => doc.scroll_rows(-n * half, width, height),
+            "view.page_down" => doc.scroll_rows(n * height as isize, width, height),
+            "view.page_up" => doc.scroll_rows(-n * height as isize, width, height),
+            "view.top" | "view.bottom" if count.is_some() => {
+                let line = (count.unwrap_or(1) as usize).saturating_sub(1);
+                doc.set_position(line, 0, width, height);
+            }
+            "view.top" => doc.set_position(0, 0, width, height),
+            _ => {
+                let (line, row) = doc.max_position(width, height);
+                doc.set_position(line, row, width, height);
+            }
+        }
     }
 
     /// Opens the selected tree entry: a folder opens or closes, a file is
@@ -592,23 +623,33 @@ impl App {
             rows,
         };
         let raw = match &self.doc {
-            Some(doc) => RawView {
-                title: doc
-                    .path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned()),
-                lines: (doc.top..doc.line_count())
-                    .take(self.raw_height())
-                    .filter_map(|i| doc.line(i).map(|l| (i + 1, l, doc.line_kind(i))))
-                    .collect(),
-                total: doc.line_count(),
-                line_numbers: self.line_numbers,
-                message: None,
-                generation: doc.generation,
-            },
+            Some(doc) => {
+                let (top, first_row) = doc.position();
+                let (gutter, text_width) = self.raw_columns();
+                RawView {
+                    title: doc
+                        .path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned()),
+                    lines: (top..doc.line_count())
+                        .take(self.raw_height())
+                        .filter_map(|i| doc.line(i).map(|l| (i + 1, l, doc.line_kind(i))))
+                        .collect(),
+                    first_row,
+                    gutter,
+                    text_width,
+                    total: doc.line_count(),
+                    line_numbers: self.line_numbers,
+                    message: None,
+                    generation: doc.generation,
+                }
+            }
             None => RawView {
                 title: None,
                 lines: Vec::new(),
+                first_row: 0,
+                gutter: 0,
+                text_width: 0,
                 total: 0,
                 line_numbers: self.line_numbers,
                 message: Some(match (&self.doc_error, &self.current_file) {
@@ -1142,7 +1183,11 @@ mod tests {
             "half of the 9 rows the pane shows"
         );
         press(&mut app, "G");
-        assert_eq!(app.view().raw.lines[0].0, 100);
+        assert_eq!(
+            app.view().raw.lines[0].0,
+            92,
+            "the last page stays full: 92-100"
+        );
         press(&mut app, "gg");
         press(&mut app, "<C-f>");
         assert_eq!(app.view().raw.lines[0].0, 10);

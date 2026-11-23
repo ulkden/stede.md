@@ -1612,6 +1612,7 @@ name = "stede-core"
 version = "0.0.1"
 dependencies = [
  "toml_edit",
+ "unicode-width",
 ]
 
 [[package]]
