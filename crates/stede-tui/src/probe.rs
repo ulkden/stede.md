@@ -72,7 +72,6 @@ fn base64(bytes: &[u8]) -> String {
     out
 }
 
-/// Runs the probe. Press `q` twice in a row to leave.
 /// What a key press did in the probe.
 #[derive(Debug, PartialEq, Eq)]
 enum Probe {
@@ -133,6 +132,7 @@ impl ProbeKeys {
     }
 }
 
+/// Runs the probe. The `probe.quit` action (`qq` by default) leaves.
 pub fn run() -> io::Result<()> {
     let mut keys = ProbeKeys::new();
     // With no way out, raw mode would trap the shell: refuse to start.
@@ -152,7 +152,7 @@ pub fn run() -> io::Result<()> {
     writeln!(
         out,
         "Keys: press <C-w>, <C-h>, <C-l>, <F1>, <Esc>, <S-Tab>, <A-x> and check each shows as named.\n\
-         Press {quit} to quit."
+         Press {quit} in quick succession to quit."
     )?;
     out.flush()?;
 

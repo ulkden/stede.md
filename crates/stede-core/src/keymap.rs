@@ -26,7 +26,13 @@ pub enum Mode {
 }
 
 impl Mode {
+    /// Every mode, including Probe, which isn't an editor mode: code that
+    /// lists the editor's modes (cheat sheets, the status line) should use
+    /// [`Mode::EDITOR`].
     pub const ALL: [Mode; 2] = [Mode::Normal, Mode::Probe];
+
+    /// The modes the editor itself runs in.
+    pub const EDITOR: [Mode; 1] = [Mode::Normal];
 
     /// The name used in config tables (`[keys.normal]`) and the status line.
     pub fn name(self) -> &'static str {
@@ -99,6 +105,12 @@ pub enum BindError {
     UnknownAction(String),
     /// Normal-mode keys can't start with `1`-`9`: those type a count.
     CountPrefix(String),
+    /// `probe.*` actions bind only in probe mode, and probe mode binds only
+    /// those: each side can't run the other's actions.
+    WrongMode {
+        action: String,
+        mode: Mode,
+    },
 }
 
 impl fmt::Display for BindError {
@@ -107,6 +119,11 @@ impl fmt::Display for BindError {
             Self::Keys(keys, e) => write!(f, "bad keys {keys:?}: {e}"),
             Self::EmptyAction(keys) => write!(f, "keys {keys:?} are bound to an empty action"),
             Self::UnknownAction(name) => write!(f, "unknown action {name:?}"),
+            Self::WrongMode { action, mode } => write!(
+                f,
+                "{action:?} can't be bound in {} mode (probe.* actions belong to probe mode)",
+                mode.name()
+            ),
             Self::CountPrefix(keys) => write!(
                 f,
                 "keys {keys:?} start with a digit, which types a count in Normal mode"
@@ -167,6 +184,12 @@ impl Keymap {
             Action::parse(action).ok_or_else(|| BindError::EmptyAction(keys.to_owned()))?;
         if !registry.contains(&action.name) {
             return Err(BindError::UnknownAction(action.name));
+        }
+        if action.name.starts_with("probe.") != (mode == Mode::Probe) {
+            return Err(BindError::WrongMode {
+                action: action.name,
+                mode,
+            });
         }
         // A leading 1-9 always starts a count in Normal mode, so such a
         // binding could never run.
@@ -643,6 +666,30 @@ mod tests {
         assert_eq!(
             res.feed(&k, input, Key::plain(KeyCode::Esc)),
             run("modal.close", &[], None)
+        );
+    }
+
+    #[test]
+    fn probe_actions_bind_only_in_probe_mode() {
+        let r = Registry::with_builtins();
+        let mut k = Keymap::new(Key::char(' '));
+        assert_eq!(
+            k.bind(Mode::Normal, Scope::Global, "Q", "probe.quit", &r),
+            Err(BindError::WrongMode {
+                action: "probe.quit".into(),
+                mode: Mode::Normal
+            })
+        );
+        assert_eq!(
+            k.bind(Mode::Probe, Scope::Global, "x", "app.quit", &r),
+            Err(BindError::WrongMode {
+                action: "app.quit".into(),
+                mode: Mode::Probe
+            })
+        );
+        assert!(
+            k.bind(Mode::Probe, Scope::Global, "<C-q>", "probe.quit", &r)
+                .is_ok()
         );
     }
 

@@ -186,8 +186,9 @@ fn valid_name(name: &str) -> bool {
 
 /// Built-in actions: name and one-line description.
 ///
-/// An action is listed here only once the core can run it, so the cheat sheet
-/// never offers a key that does nothing.
+/// An action is listed here only once something can run it (the core, or a
+/// front end for its own screens such as `probe.*`), so the cheat sheet never
+/// offers a key that does nothing.
 const BUILTINS: &[(&str, &str)] = &[
     ("app.quit", "Quit STEDE.md"),
     ("help.keys", "Open the key cheat sheet"),
