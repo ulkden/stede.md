@@ -23,6 +23,9 @@ allow = [
     "ISC",
     "Zlib",
     "Unicode-3.0",
+    # The older Unicode license (finl_unicode, via comrak). Permissive, like
+    # Unicode-3.0, and listed by the FSF as GPL-compatible.
+    "Unicode-DFS-2016",
     "CC0-1.0",
     "Unlicense",
     "Artistic-2.0",

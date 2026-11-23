@@ -1,0 +1,7 @@
+---
+source: crates/stede-markdown/tests/render.rs
+expression: "dump(&render(\"| a |\\n|---|\\n| b |\\n\\n- [ ] task\\n\\n~~del~~ https://x.y\\n\",\nFlavor::CommonMark))"
+---
+ 1-3  p "| a | |---| | b |"
+ 5-5  [item -] p "[ ] task"
+ 7-7  p "~~del~~ https://x.y"

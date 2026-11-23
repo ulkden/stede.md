@@ -1453,6 +1453,7 @@ name = "stede-markdown"
 version = "0.0.1"
 dependencies = [
  "comrak",
+ "insta",
  "stede-core",
 ]
 

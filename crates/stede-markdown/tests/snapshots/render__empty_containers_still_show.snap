@@ -1,0 +1,7 @@
+---
+source: crates/stede-markdown/tests/render.rs
+expression: "dump(&render(\"- \\n\\n>\\n\\n1.\\n\", Flavor::Gfm))"
+---
+ 1-1  [item -] p 
+ 3-3  [quote] p 
+ 5-5  [item 1.] p

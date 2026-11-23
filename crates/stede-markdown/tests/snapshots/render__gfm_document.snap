@@ -1,0 +1,27 @@
+---
+source: crates/stede-markdown/tests/render.rs
+expression: "dump(&render(DOC, Flavor::Gfm))"
+---
+ 1-4  front-matter "title: Sample\ntags: [a, b]"
+ 5-5  h1 "Heading " [em "one"]
+ 7-9  p "Some " [strong "bold"] ", " [code "code"] ", " [del "gone"] " and a " [link "link" -> https://example.com] ". Next line, then a hard break\nhere. An image: " [img "alt text" -> pic.png] " and " [link "www.example.com" -> http://www.example.com] "."
+11-11 h2 "Lists"
+13-13 [item -] p "one"
+14-14 [item -] p "two"
+15-15 [item - cont > item - [ ]] p "nested task"
+16-16 [item - cont > item - [x]] p "done task"
+18-18 [item - cont] p "Still in two."
+19-19 [item 3.] p "three"
+20-20 [item 4)] p "four"
+22-22 [quote] p "Quoted"
+24-24 [quote > quote] p "Nested quote"
+27-27 [alert:Warning] p "Careful now."
+29-31 table [Left, Center, Right]
+      header: "Left" | "Mid" | "Right"
+      row:    "a" | [em "b"] | [code "c"]
+33-35 code Some("rust") "fn main() {}"
+37-37 html "<div>raw</div>"
+39-39 rule
+41-41 p "A note." [fn "[^n]"]
+43-43 [footnote n] p "The footnote."
+45-45 [footnote n cont] p "More of it."

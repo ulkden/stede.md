@@ -1,6 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! The Markdown document type for STEDE.md.
 //!
-//! tree-sitter-md drives raw-pane highlighting and text objects on every
-//! keystroke; comrak builds the full tree with source positions on a worker
-//! thread and feeds the render model. No UI code here.
+//! comrak builds the full tree with source positions, and [`render`] turns it
+//! into the [`RenderModel`] the rendered pane draws; callers run it off the
+//! input loop (on a worker thread). tree-sitter-md, for raw-pane highlighting
+//! and text objects, arrives with the reader panes. No UI code here.
+
+mod convert;
+mod flavor;
+pub mod model;
+
+pub use convert::{comrak_options, render};
+pub use flavor::Flavor;
+pub use model::RenderModel;
