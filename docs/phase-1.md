@@ -33,11 +33,13 @@ Each step is one PR through the `stede-pr-review` loop. Tick a step when its PR 
   - Files read and parsed off the input loop; reloaded when they change on disk
   - The raw pane, read-only for now, with line numbers and highlighting by block
   - Scrolling keys
-- [ ] **6b. The rendered pane and scroll sync**
+- [x] **6b. The rendered pane and scroll sync**
   - The rendered pane drawing the render model: headings, lists, tasks, tables, code, quotes, alerts, links
   - Scroll sync both ways; Enter on a block jumps the raw pane to it
-- [ ] **7. Search**
+- [x] **7. Search**
   - `/` and `?`, `n` and `N`, smart case, all matches lit, in either pane
+  - Patterns are regexes; one that doesn't parse is searched as plain text. Matches light as you type; `Esc` restores the search before; an empty pattern repeats the last. `<leader>h` clears the lights
+  - The rendered pane lights matches in the text as drawn, so markup in a pattern (`**`) only lights in the raw pane
 - [ ] **8. Exit deliverables**
   - A manual UX test plan for the reader
   - A first draft of end-user docs

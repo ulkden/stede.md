@@ -1611,6 +1611,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 name = "stede-core"
 version = "0.0.1"
 dependencies = [
+ "regex",
  "toml_edit",
  "unicode-width",
 ]
@@ -1655,6 +1656,7 @@ version = "0.0.1"
 dependencies = [
  "insta",
  "ratatui",
+ "regex",
  "stede-core",
  "stede-markdown",
  "stede-services",

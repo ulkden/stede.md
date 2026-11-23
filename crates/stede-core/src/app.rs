@@ -16,15 +16,28 @@ use crate::key::{Key, format_keys};
 use crate::keymap::{Context, Keymap, Mode, Resolver, Scope, Step};
 use crate::layout::{Layout, LayoutOptions, PaneId};
 use crate::modal::{Modal, ModalBody, ModalStack, Row, Section};
+use crate::search::{Compiled, Direction, MAX_PATTERN, Search};
 use crate::sync::Rendered;
 use crate::tree::Tree;
-use crate::view::{PaneView, RawView, RenderedView, STATUS_ROWS, StatusView, TreeView, View};
+use crate::view::{
+    PaneView, RawView, RenderedView, STATUS_ROWS, SearchView, StatusView, TreeView, View,
+};
 
 /// Identifies the key cheat sheet among open modals, so its hotkey toggles it.
 const CHEAT_SHEET_ID: &str = "help.keys";
 
 /// Identifies the config problems modal, so a reload replaces it.
 const CONFIG_PROBLEMS_ID: &str = "config.problems";
+
+/// The character a key types into a prompt, if it types one.
+fn printable(key: Key) -> Option<char> {
+    match key.code() {
+        crate::key::KeyCode::Char(c) if !key.mods().ctrl && !key.mods().alt && !c.is_control() => {
+            Some(c)
+        }
+        _ => None,
+    }
+}
 
 /// Blocks longer than this many source lines sync by line share instead of
 /// wrapped rows, so a key never walks thousands of lines.
@@ -90,6 +103,17 @@ pub struct App {
     line_numbers: bool,
     /// The rendered pane's layout and place.
     rendered: Rendered,
+    /// The search in force (its matches are lit), if any.
+    search: Option<Search>,
+    /// The pattern being typed, and the search in force before it began
+    /// (kept for Esc).
+    prompt: Option<(Direction, String, Option<Search>)>,
+    /// Where the last search jump left the raw pane: `n` steps on from the
+    /// current match only while the view is still there.
+    search_at: Option<(usize, usize)>,
+    /// Whether the search's matches are lit (`search.off` hides them but
+    /// keeps the search for `n`, like Vim's `:noh`).
+    search_lit: bool,
     /// The line-numbers setting config last gave, so a reload that didn't
     /// change it keeps the session's `<leader>n` choice.
     config_line_numbers: Option<bool>,
@@ -124,6 +148,10 @@ impl App {
             line_numbers: true,
             config_line_numbers: None,
             rendered: Rendered::default(),
+            search: None,
+            prompt: None,
+            search_at: None,
+            search_lit: true,
         };
         if let Some(root) = options.root {
             let (tree, first) = Tree::new(root, options.file.clone());
@@ -294,6 +322,14 @@ impl App {
                             .filter(|d| d.path == path)
                             .map_or((0, 0), Doc::position);
                         self.doc = Some(Doc::new(document, self.loads));
+                        // Matches move with the text.
+                        if let Some(doc) = self.doc.as_ref() {
+                            let before = self.prompt.as_mut().and_then(|p| p.2.as_mut());
+                            for search in self.search.iter_mut().chain(before) {
+                                search.rescan(Self::doc_lines(doc));
+                            }
+                        }
+                        self.search_at = None;
                         let (_, width) = self.raw_columns();
                         let height = self.raw_height();
                         if let Some(doc) = self.doc.as_mut() {
@@ -396,16 +432,158 @@ impl App {
 
     /// Handles one key press.
     pub fn handle_key(&mut self, key: Key) -> Handled {
+        self.leave_covered_search();
+        let mut keys = self.resolver.pending_keys().to_vec();
+        keys.push(key);
         let ctx = self.context();
         let step = self.resolver.feed(&self.keymap, ctx, key);
+        self.type_or_apply(step, &keys)
+    }
+
+    /// A modal opened over the search prompt (a config reload's problems):
+    /// drop the pattern, so the modal's keys work.
+    fn leave_covered_search(&mut self) {
+        if self.mode == Mode::Search && !self.layout.modals().is_empty() {
+            if let Some((_, _, before)) = self.prompt.take() {
+                self.search = before;
+            }
+            self.mode = Mode::Normal;
+            self.resolver.reset();
+        }
+    }
+
+    /// Typing a pattern: keys that ended up bound to nothing (a lone letter,
+    /// or the start of a longer binding that didn't follow) type themselves.
+    ///
+    /// With several keys (`j` of a `jk` binding, then `<CR>`), the earlier
+    /// ones type and the last is fed again alone, so it can run its own
+    /// binding (Enter confirms, Esc cancels).
+    fn type_or_apply(&mut self, step: Step, keys: &[Key]) -> Handled {
+        if self.mode == Mode::Search
+            && matches!(step, Step::Unbound(_) | Step::Cancelled)
+            && let [prefix @ .., last] = keys
+            && !prefix.is_empty()
+        {
+            let typed: String = prefix.iter().filter_map(|k| printable(*k)).collect();
+            if !typed.is_empty() {
+                self.apply(Step::Run {
+                    action: Action {
+                        name: "search.insert".into(),
+                        args: vec![typed],
+                    },
+                    count: None,
+                });
+            }
+            let ctx = self.context();
+            let step = self.resolver.feed(&self.keymap, ctx, *last);
+            return self.type_or_apply(step, &[*last]);
+        }
+        if self.mode == Mode::Search && matches!(step, Step::Unbound(_)) {
+            let typed: String = keys.iter().filter_map(|k| printable(*k)).collect();
+            if !typed.is_empty() {
+                let insert = Action {
+                    name: "search.insert".into(),
+                    args: vec![typed],
+                };
+                return self.apply(Step::Run {
+                    action: insert,
+                    count: None,
+                });
+            }
+        }
         self.apply(step)
+    }
+
+    /// The document's lines, for searching.
+    fn doc_lines(doc: &Doc) -> impl Iterator<Item = &str> + '_ {
+        (0..doc.line_count()).filter_map(|i| doc.line(i))
+    }
+
+    /// Re-runs the pattern being typed, lighting its matches as it grows.
+    ///
+    /// Each key rescans, so it scans a budget of bytes from the view's line
+    /// on (then from the top); Enter scans the rest.
+    fn search_preview(&mut self) {
+        if let (Some((direction, text, _)), Some(doc)) = (&self.prompt, &self.doc) {
+            let top = doc.position().0;
+            let n = doc.line_count();
+            let lines = (top..n)
+                .chain(0..top)
+                .filter_map(|i| doc.line(i).map(|l| (i, l)));
+            self.search = Some(Search::preview(text, *direction, lines));
+            self.search_lit = true;
+        }
+    }
+
+    /// Goes to the next match from the raw pane's top line, puts it at the
+    /// top of the raw pane, and brings the rendered pane along.
+    /// `times` steps (a count on `n`) move through the matches, then the
+    /// panes are placed once.
+    fn search_step(
+        &mut self,
+        direction: Direction,
+        inclusive: bool,
+        times: u32,
+    ) -> Result<(), String> {
+        let Some(doc) = self.doc.as_ref() else {
+            return Err("no file open".into());
+        };
+        let here = doc.position();
+        let Some(search) = self.search.as_mut() else {
+            return Err("no search yet: / to start one".into());
+        };
+        // Scrolled away since the last jump: search from the view, not from
+        // the old match (forward, a match on the top line counts).
+        let moved = self.search_at != Some(here);
+        if moved {
+            search.clear_current();
+        }
+        let inclusive = inclusive || (moved && direction == Direction::Forward);
+        let pattern = search.pattern.clone();
+        if search.compiled == Compiled::TooBig {
+            return Err("search pattern too big to compile".into());
+        }
+        let Some((mut m, mut wrapped)) = search.step(here.0, direction, inclusive) else {
+            return Err(format!("pattern not found: {pattern}"));
+        };
+        for _ in 1..times {
+            if let Some((next, w)) = search.step(m.line, direction, false) {
+                m = next;
+                wrapped |= w;
+            }
+        }
+        self.search_lit = true;
+        let (_, width) = self.raw_columns();
+        let height = self.raw_height();
+        if let Some(doc) = self.doc.as_mut() {
+            // The match's wrapped row, so a match deep in a long paragraph line
+            // is on screen.
+            let row = doc
+                .line(m.line)
+                .map_or(0, |l| crate::text::row_at(l, width, m.start));
+            doc.set_position(m.line, row, width, height);
+            self.search_at = Some(doc.position());
+        }
+        self.rendered_follow_raw();
+        // Near the end the raw pane stops at its last page: the rendered
+        // pane goes to its end too, where the match is.
+        self.sync_ends();
+        if wrapped {
+            self.message = Some(match direction {
+                Direction::Forward => "search hit the end, continuing at the top".into(),
+                Direction::Backward => "search hit the top, continuing at the end".into(),
+            });
+        }
+        Ok(())
     }
 
     /// Call when [`key_timeout`](Self::key_timeout) passes after a pending key.
     pub fn handle_timeout(&mut self) -> Handled {
+        self.leave_covered_search();
+        let keys = self.resolver.pending_keys().to_vec();
         let ctx = self.context();
         match self.resolver.timeout(&self.keymap, ctx) {
-            Some(step) => self.apply(step),
+            Some(step) => self.type_or_apply(step, &keys),
             None => Handled {
                 redraw: true,
                 wait: false,
@@ -523,6 +701,93 @@ impl App {
                 }
                 self.sync_ends();
             }
+            "search.forward" | "search.backward" => {
+                let direction = if action.name == "search.forward" {
+                    Direction::Forward
+                } else {
+                    Direction::Backward
+                };
+                self.prompt = Some((direction, String::new(), self.search.take()));
+                self.mode = Mode::Search;
+            }
+            "search.insert" => {
+                if let (Some((_, text, _)), Some(c)) = (self.prompt.as_mut(), action.arg()) {
+                    let room = MAX_PATTERN.saturating_sub(text.chars().count());
+                    text.extend(c.chars().take(room));
+                    if c.chars().count() > room {
+                        self.message =
+                            Some(format!("search patterns stop at {MAX_PATTERN} characters"));
+                    }
+                }
+                self.search_preview();
+            }
+            "search.backspace" | "search.clear" => {
+                if let Some((_, text, _)) = self.prompt.as_mut() {
+                    if action.name == "search.clear" {
+                        text.clear();
+                    } else {
+                        text.pop();
+                    }
+                }
+                self.search_preview();
+            }
+            "search.cancel" => {
+                // Back to the search there was before, as if never typed.
+                if let Some((_, _, before)) = self.prompt.take() {
+                    self.search = before;
+                }
+                self.mode = Mode::Normal;
+            }
+            "search.confirm" => {
+                let prompt = self.prompt.take();
+                self.mode = Mode::Normal;
+                match prompt {
+                    // An empty pattern repeats the last search, as in Vim.
+                    Some((direction, text, before)) if text.is_empty() => {
+                        self.search = before;
+                        if let Some(s) = self.search.as_mut() {
+                            s.direction = direction;
+                        }
+                        self.search_step(direction, false, 1)?;
+                    }
+                    Some((direction, _, _)) => {
+                        // The preview scanned only part of a big file.
+                        if let (Some(search), Some(doc)) = (self.search.as_mut(), self.doc.as_ref())
+                            && search.partial
+                        {
+                            search.rescan(Self::doc_lines(doc));
+                        }
+                        let literal = self
+                            .search
+                            .as_ref()
+                            .is_some_and(|s| s.compiled == Compiled::Literal);
+                        // A new pattern finds from here: a match on the top line counts.
+                        self.search_step(direction, true, 1)?;
+                        if literal && self.message.is_none() {
+                            self.message = Some("not a valid regex: searched as plain text".into());
+                        }
+                    }
+                    None => {}
+                }
+            }
+            "search.next" | "search.prev" => {
+                let Some(forward) = self
+                    .search
+                    .as_ref()
+                    .map(|s| s.direction == Direction::Forward)
+                else {
+                    return Err("no search yet: / to start one".into());
+                };
+                // `N` goes against the search's own direction.
+                let ahead = (action.name == "search.next") == forward;
+                let direction = if ahead {
+                    Direction::Forward
+                } else {
+                    Direction::Backward
+                };
+                self.search_step(direction, false, times)?;
+            }
+            "search.off" => self.search_lit = false,
             "rendered.jump" => {
                 // Show the top block's source at the top of the raw pane.
                 let line = self
@@ -865,7 +1130,21 @@ impl App {
                 .keymap
                 .keys_for(self.mode, Scope::Modal, "modal.close")
                 .map(|keys| format_keys(&keys)),
+            search: self
+                .search
+                .as_ref()
+                .filter(|_| self.search_lit)
+                .map(|s| SearchView {
+                    capped: s.at_least(),
+                    regex: s.regex(),
+                    current_line: s.current().map(|m| m.line + 1),
+                    position: s.position(),
+                }),
             status: StatusView {
+                prompt: self.prompt.as_ref().map(|(d, text, _)| {
+                    let sign = if *d == Direction::Forward { '/' } else { '?' };
+                    format!("{sign}{text}")
+                }),
                 mode: self.mode.name(),
                 pending: self.resolver.pending(),
                 message: self.message.clone(),
@@ -1512,6 +1791,239 @@ mod tests {
         assert!(app.view().raw.line_numbers);
         press(&mut app, "<leader>n");
         assert!(!app.view().raw.line_numbers);
+    }
+
+    fn search_app() -> App {
+        let mut app = App::new(AppOptions {
+            file: Some("/p/a.md".into()),
+            ..AppOptions::default()
+        });
+        app.resize(80, 12);
+        let text: String = (1..=40)
+            .map(|i| {
+                if i % 10 == 0 {
+                    format!("target {i}\n")
+                } else {
+                    format!("line {i}\n")
+                }
+            })
+            .collect();
+        opened(&mut app, "/p/a.md", &text);
+        app
+    }
+
+    #[test]
+    fn search_types_jumps_and_steps() {
+        let mut app = search_app();
+        press(&mut app, "/targ");
+        assert_eq!(app.view().status.prompt.as_deref(), Some("/targ"));
+        assert_eq!(app.view().status.mode, "search");
+        press(&mut app, "<CR>");
+        assert_eq!(app.view().status.prompt, None);
+        assert_eq!(app.view().raw.lines[0].0, 10);
+        assert_eq!(app.view().search.unwrap().position, Some((1, 4)));
+        press(&mut app, "n");
+        assert_eq!(app.view().raw.lines[0].0, 20);
+        press(&mut app, "N");
+        assert_eq!(app.view().raw.lines[0].0, 10);
+        press(&mut app, "3n");
+        assert_eq!(
+            app.view().raw.lines[0].0,
+            32,
+            "line 40 at the bottom of the last full page"
+        );
+        press(&mut app, "n");
+        assert_eq!(app.view().search.unwrap().position, Some((1, 4)));
+        assert_eq!(
+            app.view().status.message.as_deref(),
+            Some("search hit the end, continuing at the top")
+        );
+    }
+
+    #[test]
+    fn backward_search_and_its_n() {
+        let mut app = search_app();
+        press(&mut app, "G?target<CR>");
+        assert_eq!(app.view().search.unwrap().current_line, Some(30));
+        // n keeps going backward; N goes forward.
+        press(&mut app, "n");
+        assert_eq!(app.view().search.unwrap().current_line, Some(20));
+        press(&mut app, "N");
+        assert_eq!(app.view().search.unwrap().current_line, Some(30));
+    }
+
+    #[test]
+    fn escape_restores_and_an_empty_pattern_repeats() {
+        let mut app = search_app();
+        press(&mut app, "/target<CR>");
+        press(&mut app, "/zz<Esc>");
+        assert_eq!(app.view().status.mode, "normal");
+        assert_eq!(app.view().search.unwrap().regex.as_str(), "target");
+        press(&mut app, "/<CR>");
+        assert_eq!(app.view().search.unwrap().current_line, Some(20));
+    }
+
+    #[test]
+    fn search_typing_takes_digits_spaces_and_edits() {
+        let mut app = search_app();
+        press(&mut app, "/line 3<BS>4");
+        assert_eq!(app.view().status.prompt.as_deref(), Some("/line 4"));
+        press(&mut app, "<C-u>target 2<CR>");
+        assert_eq!(app.view().search.unwrap().current_line, Some(20));
+    }
+
+    #[test]
+    fn a_modal_over_the_prompt_takes_the_keys() {
+        use crate::config::{Config, Layer};
+        let mut app = search_app();
+        press(&mut app, "/targ");
+        let (config, errors) = Config::from_layers(&[Layer {
+            path: "c.toml".into(),
+            text: "[ui]\nbogus = 1\n".into(),
+        }]);
+        app.apply_config(&config, &errors);
+        assert!(app.modals().is_open());
+        press(&mut app, "<Esc>");
+        assert!(!app.modals().is_open(), "Esc closes the modal");
+        assert_eq!(app.view().status.mode, "normal");
+        assert_eq!(app.view().status.prompt, None);
+    }
+
+    #[test]
+    fn a_reload_mid_prompt_rescans_the_earlier_search() {
+        let mut app = search_app();
+        press(&mut app, "/target<CR>/");
+        let text: String = (1..=40)
+            .map(|i| {
+                if i % 10 == 5 {
+                    format!("target {i}\n")
+                } else {
+                    format!("line {i}\n")
+                }
+            })
+            .collect();
+        opened(&mut app, "/p/a.md", &text);
+        // Esc brings back /target, its matches found in the new text: n goes
+        // on from the view (line 10) to the new match on 15.
+        press(&mut app, "<Esc>n");
+        assert_eq!(app.view().search.unwrap().current_line, Some(15));
+        assert_eq!(app.view().search.unwrap().position, Some((2, 4)));
+    }
+
+    #[test]
+    fn n_searches_from_where_the_view_was_scrolled() {
+        let mut app = search_app();
+        press(&mut app, "/target<CR>");
+        assert_eq!(app.view().search.unwrap().current_line, Some(10));
+        press(&mut app, "25gg");
+        press(&mut app, "n");
+        assert_eq!(app.view().search.unwrap().current_line, Some(30));
+        press(&mut app, "gg15jN");
+        assert_eq!(app.view().search.unwrap().current_line, Some(10));
+    }
+
+    #[test]
+    fn a_match_deep_in_a_long_line_is_on_screen() {
+        let mut app = App::new(AppOptions {
+            file: Some("/p/a.md".into()),
+            ..AppOptions::default()
+        });
+        app.resize(80, 12);
+        let long = format!("{} needle end", "word ".repeat(600));
+        opened(&mut app, "/p/a.md", &format!("{long}\n\nafter\n"));
+        press(&mut app, "/needle<CR>");
+        let view = app.view();
+        let (_, width) = app.raw_columns();
+        let at = long.find("needle").unwrap();
+        let row = crate::text::row_at(&long, width, at);
+        assert!(row > 20, "the match is deep in the line");
+        // The match's row is drawn: the first row shown is at most it.
+        assert!(view.raw.first_row <= row && row < view.raw.first_row + 10);
+    }
+
+    #[test]
+    fn keys_of_an_unfinished_binding_type_themselves() {
+        use crate::config::{Config, Layer};
+        let mut app = search_app();
+        let (config, errors) = Config::from_layers(&[Layer {
+            path: "c.toml".into(),
+            text: "[keys.search]\njk = \"search.cancel\"\n".into(),
+        }]);
+        assert!(errors.is_empty(), "{errors:?}");
+        app.apply_config(&config, &errors);
+        press(&mut app, "/major");
+        assert_eq!(app.view().status.prompt.as_deref(), Some("/major"));
+        press(&mut app, "j");
+        app.handle_timeout();
+        assert_eq!(app.view().status.prompt.as_deref(), Some("/majorj"));
+        press(&mut app, "jk");
+        assert_eq!(app.view().status.mode, "normal");
+    }
+
+    #[test]
+    fn missing_patterns_and_clearing() {
+        let mut app = search_app();
+        press(&mut app, "/nothing<CR>");
+        assert_eq!(
+            app.view().status.message.as_deref(),
+            Some("pattern not found: nothing")
+        );
+        press(&mut app, "/target<CR><leader>h");
+        assert!(app.view().search.is_none(), "the lights go");
+        // The search stays, as after Vim's :noh: n goes on and lights again.
+        press(&mut app, "n");
+        assert_eq!(app.view().search.unwrap().current_line, Some(20));
+        let mut fresh = search_app();
+        press(&mut fresh, "n");
+        assert!(
+            fresh
+                .view()
+                .status
+                .message
+                .unwrap()
+                .starts_with("no search yet")
+        );
+    }
+
+    #[test]
+    fn a_counted_n_steps_then_places_once() {
+        let mut app = search_app();
+        press(&mut app, "/target<CR>2n");
+        assert_eq!(app.view().search.unwrap().current_line, Some(30));
+        press(&mut app, "5n");
+        assert_eq!(
+            app.view().search.unwrap().current_line,
+            Some(40),
+            "wraps: 40, 10, 20, 30, 40"
+        );
+    }
+
+    #[test]
+    fn enter_and_esc_after_an_unfinished_binding_still_work() {
+        use crate::config::{Config, Layer};
+        let mut app = search_app();
+        let (config, errors) = Config::from_layers(&[Layer {
+            path: "c.toml".into(),
+            text: "[keys.search]\njk = \"search.cancel\"\n".into(),
+        }]);
+        app.apply_config(&config, &errors);
+        press(&mut app, "/targej<BS>t<CR>");
+        assert_eq!(app.view().status.mode, "normal", "Enter confirmed");
+        assert_eq!(app.view().search.unwrap().regex.as_str(), "target");
+        press(&mut app, "/xj<Esc>");
+        assert_eq!(app.view().status.mode, "normal", "Esc cancelled");
+        assert_eq!(app.view().search.unwrap().regex.as_str(), "target");
+    }
+
+    #[test]
+    fn user_commands_are_not_bound_in_search_mode() {
+        let mut registry = crate::action::Registry::with_builtins();
+        registry
+            .register("user.hello", "Say hello", crate::action::Source::User)
+            .unwrap();
+        let modes = registry.get("user.hello").unwrap().modes;
+        assert!(modes.contains(&Mode::Normal));
+        assert!(!modes.contains(&Mode::Search));
     }
 
     #[test]

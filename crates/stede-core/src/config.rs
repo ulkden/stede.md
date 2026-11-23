@@ -155,6 +155,7 @@ const KEY_TABLES: &[(&str, Mode, Scope)] = &[
     ("tree", Mode::Normal, Scope::Pane(PaneId::Tree)),
     ("modal", Mode::Normal, Scope::Modal),
     ("output", Mode::Normal, Scope::OutputModal),
+    ("search", Mode::Search, Scope::Global),
     ("probe", Mode::Probe, Scope::Global),
 ];
 
@@ -343,7 +344,7 @@ impl LayerParser<'_> {
                     Some(&(_, mode, scope)) => self.bindings(item, &origin, mode, scope),
                     None => self.error(
                         &origin,
-                        "unknown key; binding tables are normal, raw, rendered, tree, modal, output and probe",
+                        "unknown key; binding tables are normal, raw, rendered, tree, modal, output, search and probe",
                     ),
                 },
             }

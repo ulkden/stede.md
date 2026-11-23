@@ -23,6 +23,8 @@ pub struct View<'a> {
     pub raw: RawView<'a>,
     /// The rendered pane's content.
     pub rendered: RenderedView<'a>,
+    /// The search in force: light its matches in both reader panes.
+    pub search: Option<SearchView<'a>>,
     /// Open modals, bottom first. Draw them all, top last.
     pub modals: Vec<&'a Modal>,
     /// The key bound to `modal.close`, for modal footers ("Esc to close").
@@ -42,6 +44,9 @@ pub struct PaneView {
 /// The status line.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StatusView {
+    /// The search pattern being typed, with its `/` or `?`: show it in place
+    /// of the rest of the status line, with a cursor after it.
+    pub prompt: Option<String>,
     /// The mode name, such as `normal`.
     pub mode: &'static str,
     /// Keys typed toward a binding, such as `3<C-w>`.
@@ -76,6 +81,30 @@ pub struct RawView<'a> {
     /// Changes when the document is loaded again.
     pub generation: u64,
 }
+
+/// The search in force.
+#[derive(Clone, Copy, Debug)]
+pub struct SearchView<'a> {
+    /// Its pattern, compiled: find the matches in each row drawn.
+    pub regex: &'a regex::Regex,
+    /// The line (1-based) of the current match, drawn brighter.
+    pub current_line: Option<usize>,
+    /// The current match's place and the count, such as `(3, 12)`.
+    pub position: Option<(usize, usize)>,
+    /// Whether the count stopped at its cap: show it as "at least".
+    pub capped: bool,
+}
+
+impl PartialEq for SearchView<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.regex.as_str() == other.regex.as_str()
+            && self.current_line == other.current_line
+            && self.position == other.position
+            && self.capped == other.capped
+    }
+}
+
+impl Eq for SearchView<'_> {}
 
 /// What the rendered pane shows: the render model, from a block and a row
 /// within it. The front end lays the model out and reports block heights

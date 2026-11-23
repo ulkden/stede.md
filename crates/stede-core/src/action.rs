@@ -126,14 +126,15 @@ impl Registry {
         registry
     }
 
-    /// Adds an action that runs in the editor's modes ([`Mode::EDITOR`]).
+    /// Adds an action that runs in Normal mode, as the built-in editor
+    /// actions do (not Search mode, where keys type the pattern).
     pub fn register(
         &mut self,
         name: &str,
         description: &str,
         source: Source,
     ) -> Result<(), RegisterError> {
-        self.register_in(name, description, source, &Mode::EDITOR)
+        self.register_in(name, description, source, NORMAL)
     }
 
     /// Adds an action that runs only in `modes`.
@@ -223,89 +224,116 @@ fn valid_name(name: &str) -> bool {
 /// An action is listed here only once something can run it (the core, or a
 /// front end for its own screens such as `probe.*`), so the cheat sheet never
 /// offers a key that does nothing.
-const EDITOR: &[Mode] = &Mode::EDITOR;
+const NORMAL: &[Mode] = &[Mode::Normal];
+const SEARCH: &[Mode] = &[Mode::Search];
 const PROBE: &[Mode] = &[Mode::Probe];
 
 const BUILTINS: &[(&str, &str, &[Mode])] = &[
-    ("app.quit", "Quit STEDE.md", EDITOR),
+    ("app.quit", "Quit STEDE.md", NORMAL),
     (
         "config.problems",
         "Show the config problems found at start",
-        EDITOR,
+        NORMAL,
     ),
-    ("help.keys", "Open the key cheat sheet", EDITOR),
-    ("modal.close", "Close the top modal", EDITOR),
-    ("modal.close_all", "Close every open modal", EDITOR),
-    ("modal.reopen_last", "Reopen the last output modal", EDITOR),
-    ("modal.scroll_down", "Scroll the top modal down", EDITOR),
-    ("modal.scroll_up", "Scroll the top modal up", EDITOR),
+    ("help.keys", "Open the key cheat sheet", NORMAL),
+    ("modal.close", "Close the top modal", NORMAL),
+    ("modal.close_all", "Close every open modal", NORMAL),
+    ("modal.reopen_last", "Reopen the last output modal", NORMAL),
+    ("modal.scroll_down", "Scroll the top modal down", NORMAL),
+    ("modal.scroll_up", "Scroll the top modal up", NORMAL),
     (
         "pane.focus_left",
         "Move focus to the pane on the left, opening it if folded",
-        EDITOR,
+        NORMAL,
     ),
     (
         "pane.focus_right",
         "Move focus to the pane on the right, opening it if folded",
-        EDITOR,
+        NORMAL,
     ),
     (
         "pane.focus_one",
         "Fold every pane but this one; again to restore the layout",
-        EDITOR,
+        NORMAL,
     ),
     (
         "pane.toggle",
         "Fold or open a pane: raw, rendered or tree",
-        EDITOR,
+        NORMAL,
     ),
-    ("view.down", "Scroll down a line", EDITOR),
-    ("view.up", "Scroll up a line", EDITOR),
-    ("view.half_down", "Scroll down half a page", EDITOR),
-    ("view.half_up", "Scroll up half a page", EDITOR),
-    ("view.page_down", "Scroll down a page", EDITOR),
-    ("view.page_up", "Scroll up a page", EDITOR),
-    ("view.top", "Go to the top of the file", EDITOR),
-    ("view.bottom", "Go to the end of the file", EDITOR),
+    (
+        "search.forward",
+        "Search forward: type a pattern, Enter to go",
+        NORMAL,
+    ),
+    (
+        "search.backward",
+        "Search backward: type a pattern, Enter to go",
+        NORMAL,
+    ),
+    ("search.next", "Go to the next match", NORMAL),
+    ("search.prev", "Go to the previous match", NORMAL),
+    ("search.off", "Clear search highlights", NORMAL),
+    ("search.confirm", "Search for the pattern typed", SEARCH),
+    ("search.cancel", "Stop typing a search", SEARCH),
+    (
+        "search.backspace",
+        "Delete the last character of the pattern",
+        SEARCH,
+    ),
+    ("search.clear", "Clear the pattern", SEARCH),
+    (
+        "search.insert",
+        "Type into the pattern (any printable key)",
+        SEARCH,
+    ),
+    ("view.down", "Scroll down a line", NORMAL),
+    ("view.up", "Scroll up a line", NORMAL),
+    ("view.half_down", "Scroll down half a page", NORMAL),
+    ("view.half_up", "Scroll up half a page", NORMAL),
+    ("view.page_down", "Scroll down a page", NORMAL),
+    ("view.page_up", "Scroll up a page", NORMAL),
+    ("view.top", "Go to the top of the file", NORMAL),
+    ("view.bottom", "Go to the end of the file", NORMAL),
     (
         "line_numbers.toggle",
         "Show or hide line numbers in the raw pane",
-        EDITOR,
+        NORMAL,
     ),
     (
         "rendered.jump",
         "Show the top rendered block's source in the raw pane",
-        EDITOR,
+        NORMAL,
     ),
     (
         "tree.down",
         "Select the next entry in the file tree",
-        EDITOR,
+        NORMAL,
     ),
     (
         "tree.up",
         "Select the previous entry in the file tree",
-        EDITOR,
+        NORMAL,
     ),
     (
         "tree.top",
         "Select the first entry in the file tree",
-        EDITOR,
+        NORMAL,
     ),
     (
         "tree.bottom",
         "Select the last entry in the file tree",
-        EDITOR,
+        NORMAL,
     ),
     (
         "tree.open",
         "Open the selected folder or file; on an open folder, close it",
-        EDITOR,
+        NORMAL,
     ),
     (
         "tree.close",
         "Close the selected folder, or go to its parent",
-        EDITOR,
+        NORMAL,
     ),
     (
         "probe.quit",
