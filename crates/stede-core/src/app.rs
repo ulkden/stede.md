@@ -34,6 +34,11 @@ pub struct Handled {
 #[derive(Clone, Debug, Default)]
 pub struct AppOptions {
     pub layout: LayoutOptions,
+    /// The merged config. Its tree side, keys and timeout override `layout`
+    /// and the defaults.
+    pub config: crate::config::Config,
+    /// Problems found while reading config files; shown in a modal at start.
+    pub config_errors: Vec<crate::config::ConfigError>,
 }
 
 /// The editor state a front end drives.
@@ -54,18 +59,39 @@ pub struct App {
 impl App {
     pub fn new(options: AppOptions) -> Self {
         let registry = Registry::with_builtins();
-        let keymap = Keymap::defaults(&registry);
-        Self {
+        let (keymap, key_errors) = Keymap::from_config(&registry, &options.config);
+        let layout = Layout::new(LayoutOptions {
+            tree_side: options.config.tree_side,
+            ..options.layout
+        });
+        let mut app = Self {
             registry,
             keymap,
             resolver: Resolver::new(),
-            layout: Layout::new(options.layout),
+            layout,
             mode: Mode::Normal,
             message: None,
-            key_timeout: DEFAULT_KEY_TIMEOUT,
+            key_timeout: options.config.key_timeout,
             quit: false,
             screen: (80, 24),
+        };
+        let all: Vec<&crate::config::ConfigError> =
+            options.config_errors.iter().chain(&key_errors).collect();
+        if !all.is_empty() {
+            let count = all.len();
+            let problems = problem_lines(&all);
+            app.notify(format!(
+                "{count} config problem(s): {} to reopen the list",
+                app.keymap
+                    .keys_for(Mode::Normal, Scope::Global, "modal.reopen_last")
+                    .map(|k| format_keys(&k))
+                    .unwrap_or_else(|| "modal.reopen_last".into())
+            ));
+            app.layout
+                .modals_mut()
+                .open(Modal::output("Config problems", ModalBody::Text(problems)));
         }
+        app
     }
 
     pub fn registry(&self) -> &Registry {
@@ -277,6 +303,38 @@ impl App {
     }
 }
 
+/// Config problems as modal lines: each file's name, then one indented line
+/// per problem (`line: key: message`). Long paths stay on their own line, so
+/// what matters (the line, key and message) isn't cut off at the modal's edge.
+fn problem_lines(problems: &[&crate::config::ConfigError]) -> Vec<String> {
+    use crate::config::Severity;
+    let mut files: Vec<&std::path::Path> = Vec::new();
+    for p in problems {
+        if !files.contains(&p.file.as_path()) {
+            files.push(&p.file);
+        }
+    }
+    let mut lines = Vec::new();
+    for file in files {
+        lines.push(file.display().to_string());
+        for p in problems.iter().filter(|p| p.file == file) {
+            let mut line = String::from("  ");
+            if p.severity == Severity::Note {
+                line.push_str("note: ");
+            }
+            if p.line > 0 {
+                line.push_str(&format!("{}: ", p.line));
+            }
+            if !p.key.is_empty() {
+                line.push_str(&format!("{}: ", p.key));
+            }
+            line.push_str(&p.message);
+            lines.push(line);
+        }
+    }
+    lines
+}
+
 /// Builds the key cheat sheet for a mode from the live keymap: one section per
 /// scope, each row the keys, the action and its description.
 pub fn cheat_sheet(keymap: &Keymap, registry: &Registry, mode: Mode) -> Modal {
@@ -392,6 +450,65 @@ mod tests {
     fn view_names_the_close_key() {
         let app = App::new(AppOptions::default());
         assert_eq!(app.view().close_key.as_deref(), Some("<Esc>"));
+    }
+
+    #[test]
+    fn config_applies_keys_side_and_timeout() {
+        use crate::config::{Config, Layer};
+        let (config, errors) = Config::from_layers(&[Layer {
+            path: "c.toml".into(),
+            text: "[ui]\ntree_side = \"left\"\n[keys]\nleader = \",\"\ntimeout_ms = 250\n[keys.normal]\nQ = \"app.quit\"\nZZ = \"\"\n".into(),
+        }]);
+        assert!(errors.is_empty());
+        let mut app = App::new(AppOptions {
+            config,
+            ..AppOptions::default()
+        });
+        assert!(!app.modals().is_open(), "no problems, no modal");
+        assert_eq!(app.layout().order().next(), Some(PaneId::Tree));
+        assert_eq!(app.key_timeout(), Duration::from_millis(250));
+        press(&mut app, ",e");
+        assert_eq!(app.layout().state(PaneId::Tree), PaneState::Folded);
+        press(&mut app, "ZZ");
+        assert!(!app.should_quit(), "ZZ was unbound");
+        press(&mut app, "Q");
+        assert!(app.should_quit());
+    }
+
+    #[test]
+    fn config_problems_open_in_a_modal() {
+        use crate::config::{Config, Layer};
+        let (config, errors) = Config::from_layers(&[Layer {
+            path: "c.toml".into(),
+            text: "[keys.normal]\nx = \"no.such\"\nZQ = \"\"\nnn = \"\"\n[ui]\nbogus = 1\n".into(),
+        }]);
+        let app = App::new(AppOptions {
+            config,
+            config_errors: errors,
+            ..AppOptions::default()
+        });
+        let top = app.modals().top().expect("problems modal");
+        assert_eq!(top.title, "Config problems");
+        let ModalBody::Text(lines) = &top.body else {
+            panic!("text expected");
+        };
+        assert_eq!(
+            lines,
+            &vec![
+                "c.toml".to_owned(),
+                "  6: ui.bogus: unknown key".to_owned(),
+                "  2: keys.normal.x: unknown action \"no.such\"".to_owned(),
+                "  4: keys.normal.nn: keys \"nn\" aren't bound here, so there's nothing to unbind"
+                    .to_owned(),
+            ]
+        );
+        assert!(
+            app.view()
+                .status
+                .message
+                .unwrap()
+                .starts_with("3 config problem(s)")
+        );
     }
 
     #[test]

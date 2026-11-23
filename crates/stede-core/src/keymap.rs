@@ -105,6 +105,8 @@ pub enum BindError {
     UnknownAction(String),
     /// Normal-mode keys can't start with `1`-`9`: those type a count.
     CountPrefix(String),
+    /// An unbind (empty action) named keys that have no binding there.
+    NotBound(String),
     /// The action doesn't run in this mode (its registry entry says where it does).
     WrongMode {
         keys: String,
@@ -145,6 +147,10 @@ impl fmt::Display for BindError {
                 "keys {keys:?}: {} mode bindings can't be scoped to {scope}",
                 mode.name()
             ),
+            Self::NotBound(keys) => write!(
+                f,
+                "keys {keys:?} aren't bound here, so there's nothing to unbind"
+            ),
             Self::CountPrefix(keys) => write!(
                 f,
                 "keys {keys:?} start with a digit, which types a count in Normal mode"
@@ -175,13 +181,65 @@ impl Keymap {
 
     /// The built-in Vim-style bindings, with `<Space>` as leader.
     pub fn defaults(registry: &Registry) -> Self {
-        let mut keymap = Self::new(Key::char(' '));
+        Self::defaults_with_leader(registry, Key::char(' '))
+    }
+
+    /// The built-in bindings with another leader key.
+    pub fn defaults_with_leader(registry: &Registry, leader: Key) -> Self {
+        let mut keymap = Self::new(leader);
         for &(mode, scope, keys, action) in DEFAULT_BINDINGS {
             keymap
                 .bind(mode, scope, keys, action, registry)
                 .expect("default bindings are valid");
         }
         keymap
+    }
+
+    /// The defaults with config bindings applied over them, in order. An
+    /// empty action unbinds the keys. Returns the problems, each at the
+    /// config entry it came from.
+    pub fn from_config(
+        registry: &Registry,
+        config: &crate::config::Config,
+    ) -> (Self, Vec<crate::config::ConfigError>) {
+        let mut keymap = Self::defaults_with_leader(registry, config.leader);
+        let mut errors = Vec::new();
+        for entry in &config.bindings {
+            let result = if entry.action.is_empty() {
+                keymap
+                    .unbind(entry.mode, entry.scope, &entry.keys)
+                    .and_then(|found| {
+                        if found {
+                            Ok(())
+                        } else {
+                            Err(BindError::NotBound(entry.keys.clone()))
+                        }
+                    })
+            } else {
+                keymap.bind(
+                    entry.mode,
+                    entry.scope,
+                    &entry.keys,
+                    &entry.action,
+                    registry,
+                )
+            };
+            if let Err(e) = result {
+                errors.push(entry.origin.error(e.to_string()));
+            }
+        }
+        (keymap, errors)
+    }
+
+    /// Removes the binding of `keys` in this mode and scope. Returns whether
+    /// there was one.
+    pub fn unbind(&mut self, mode: Mode, scope: Scope, keys: &str) -> Result<bool, BindError> {
+        let parsed =
+            parse_keys(keys, Some(self.leader)).map_err(|e| BindError::Keys(keys.to_owned(), e))?;
+        Ok(self
+            .tables
+            .get_mut(&(mode, scope))
+            .is_some_and(|t| t.remove(&parsed).is_some()))
     }
 
     pub fn leader(&self) -> Key {
