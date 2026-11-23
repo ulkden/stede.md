@@ -10,16 +10,19 @@ change introduces:
   * GitHub Actions in .github/workflows/ and .github/actions/
   * the dev tools pinned in the justfile
 
-A version passes if it was published at least --min-days ago, or if it is a
-patch bump (same major.minor) of a version the base already had. Bug fixes may
-come in at once (see "Dependencies" in CONTRIBUTING.md).
+A version passes if it was published at least --min-days ago. Crates, the
+toolchain and dev tools also pass on a patch bump (same major.minor) of a
+version the base already had: bug fixes may come in at once. GitHub Actions get
+no patch exemption, matching their flat Dependabot cooldown (see "Dependencies"
+in CONTRIBUTING.md).
 
 It also enforces exact pins: the toolchain must be a full version (not
 "stable"), and every remote action must be pinned to a commit SHA with a
 version comment that resolves to that SHA.
 
 For a security fix that is not a patch bump, add the `dependency-age-exempt`
-label to the PR (CI passes --exempt) and say why in the PR.
+label to the PR (CI passes --exempt) and say why in the PR. The label only
+waives "too new"; pinning problems and unverifiable versions still fail.
 
 Only the Python standard library is used. Network errors fail the check: an
 age that can't be confirmed doesn't pass.
@@ -27,13 +30,17 @@ age that can't be confirmed doesn't pass.
 
 from __future__ import annotations
 
+import sys
+
+if sys.version_info < (3, 11):
+    sys.exit("error: scripts/dependency-age.py needs Python 3.11 or newer (for tomllib)")
+
 import argparse
 import datetime as dt
 import json
 import os
 import re
 import subprocess
-import sys
 import time
 import tomllib
 import urllib.error
@@ -55,7 +62,7 @@ JUSTFILE_TOOLS = {
 }
 ACTION_FILES = (".github/workflows", ".github/actions")
 USES_RE = re.compile(
-    r"^\s*-?\s*uses:\s*([^\s#]+)(?:\s*#\s*(\S+))?", re.MULTILINE
+    r"^[ \t]*-?[ \t]*uses:[ \t]*([^\s#]+)(?:[ \t]*#[ \t]*(\S+))?", re.MULTILINE
 )
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 VERSION_RE = re.compile(r"^v?(\d+)\.(\d+)(?:\.(\d+))?(.*)$")
@@ -193,13 +200,17 @@ def toolchain_changes(base: str) -> tuple[list[Change], list[str]]:
 
 
 def action_pins(text: str) -> list[tuple[str, str, str | None]]:
-    """(action, ref, version comment) for each remote `uses:` line."""
+    """(action, ref, version comment) for each remote `uses:` line.
+
+    Local actions (`./...`) are skipped. A `uses:` with no `@` comes back with an
+    empty ref so the caller reports it as unpinned.
+    """
     pins = []
     for m in USES_RE.finditer(text):
         spec, comment = m[1].strip("'\""), m[2]
-        if spec.startswith(("./", "docker://")) or "@" not in spec:
+        if spec.startswith("./"):
             continue
-        action, ref = spec.rsplit("@", 1)
+        action, _, ref = spec.rpartition("@") if "@" in spec else (spec, "", "")
         pins.append((action, ref, comment))
     return pins
 
@@ -217,9 +228,14 @@ def action_changes(base: str) -> tuple[list[Change], list[str]]:
     changes, problems, seen = [], [], set()
     for path in files_under(None, ACTION_FILES):
         for action, ref, comment in action_pins(at_head(path)):
+            if action.startswith("docker://"):
+                if not ref.startswith("sha256:"):
+                    problems.append(f"{path}: {action} is not pinned by @sha256 digest")
+                continue
             repo = action_repo(action)
             if not SHA_RE.match(ref):
-                problems.append(f"{path}: {action}@{ref} is not pinned to a commit SHA")
+                shown = f"{action}@{ref}" if ref else action
+                problems.append(f"{path}: {shown} is not pinned to a commit SHA")
                 continue
             if not comment:
                 problems.append(f"{path}: {action}@{ref[:12]} has no `# vX.Y.Z` comment")
@@ -258,18 +274,34 @@ def fetch(url: str, token: str | None = None) -> bytes:
     if token:
         headers["Authorization"] = f"Bearer {token}"
     req = urllib.request.Request(url, headers=headers)
-    for attempt in range(3):
+    attempts = 4
+    for attempt in range(attempts):
+        last = attempt == attempts - 1
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
                 return resp.read()
         except urllib.error.HTTPError as e:
-            if e.code < 500 or attempt == 2:
+            limited = e.code == 429 or (
+                e.code == 403 and e.headers.get("X-RateLimit-Remaining") == "0"
+            )
+            if last or not (limited or e.code >= 500):
                 raise
+            time.sleep(retry_delay(e, attempt))
+            continue
         except urllib.error.URLError:
-            if attempt == 2:
+            if last:
                 raise
         time.sleep(2 * (attempt + 1))
     raise AssertionError("unreachable")
+
+
+def retry_delay(e: urllib.error.HTTPError, attempt: int, cap: float = 60.0) -> float:
+    """Seconds to wait before retrying, from Retry-After or X-RateLimit-Reset."""
+    if (after := e.headers.get("Retry-After")) and after.isdigit():
+        return min(float(after), cap)
+    if (reset := e.headers.get("X-RateLimit-Reset")) and reset.isdigit():
+        return min(max(float(reset) - time.time(), 1.0), cap)
+    return float(2 * (attempt + 1))
 
 
 def parse_time(s: str) -> dt.datetime:
@@ -307,20 +339,20 @@ def action_published(repo: str, tag: str, sha: str, token: str | None) -> dt.dat
         raise ValueError(f"tag {tag} is {tag_sha[:12]}, not the pinned {sha[:12]}")
     try:
         release = json.loads(fetch(f"{api}/releases/tags/{tag}", token))
-        return parse_time(release["published_at"])
     except urllib.error.HTTPError as e:
-        if e.code != 404:
-            raise
-    # A tag with no release: fall back to the commit date.
-    commit = json.loads(fetch(f"{api}/commits/{sha}", token))
-    return parse_time(commit["commit"]["committer"]["date"])
+        if e.code == 404:
+            # Commit and tagger dates are set by whoever made them, so they
+            # can't prove age. Only a GitHub release date counts.
+            raise ValueError(f"{tag} has no GitHub release, so its age can't be confirmed") from e
+        raise
+    return parse_time(release["published_at"])
 
 
 # --- checking ----------------------------------------------------------------
 
 
 def check(change: Change, min_days: int, now: dt.datetime, token: str | None) -> Result:
-    if change.old and is_patch_bump(change.old, change.new):
+    if change.kind != "action" and change.old and is_patch_bump(change.old, change.new):
         return Result(change, "patch", f"patch bump of {change.old}")
     try:
         if change.kind in ("crate", "tool"):
@@ -333,7 +365,8 @@ def check(change: Change, min_days: int, now: dt.datetime, token: str | None) ->
         return Result(change, "error", f"could not verify: {e}")
     age = now - published
     ready = published + dt.timedelta(days=min_days)
-    detail = f"published {published:%Y-%m-%d}, {age.days} days ago"
+    days = f"{age.days} day{'' if age.days == 1 else 's'}"
+    detail = f"published {published:%Y-%m-%d}, {days} ago"
     if age < dt.timedelta(days=min_days):
         return Result(change, "too-new", f"{detail}; eligible {ready:%Y-%m-%d}")
     return Result(change, "ok", detail)
@@ -353,7 +386,7 @@ def report(results: list[Result], problems: list[str], min_days: int, exempt: bo
     if problems:
         lines += ["", "**Pinning problems:**", *[f"- {p}" for p in problems]]
     if exempt:
-        lines += ["", "**`dependency-age-exempt` is set: failures are reported but don't fail the check.**"]
+        lines += ["", "**`dependency-age-exempt` is set: \"too new\" is reported but doesn't fail. Pinning problems and unverified versions still fail.**"]
     return "\n".join(lines) + "\n"
 
 
@@ -364,7 +397,15 @@ def main() -> int:
     ap.add_argument("--exempt", action="store_true", help="report failures without failing")
     args = ap.parse_args()
 
-    base = args.base or git("merge-base", "HEAD", "origin/main").strip()
+    # Paths below are relative to the repo root, whatever the current directory.
+    os.chdir(git("rev-parse", "--show-toplevel").strip())
+    if args.base:
+        base = args.base
+    else:
+        try:
+            base = git("merge-base", "HEAD", "origin/main").strip()
+        except subprocess.CalledProcessError:
+            sys.exit("error: no merge-base with origin/main; run `git fetch origin` or pass --base")
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
     now = dt.datetime.now(dt.UTC)
 
@@ -381,8 +422,9 @@ def main() -> int:
         with open(summary, "a") as f:
             f.write(text)
 
-    failed = problems or any(r.status in ("too-new", "error") for r in results)
-    if failed and not args.exempt:
+    hard_fail = bool(problems) or any(r.status == "error" for r in results)
+    too_new = any(r.status == "too-new" for r in results)
+    if hard_fail or (too_new and not args.exempt):
         print("error: dependency age check failed (see CONTRIBUTING.md, 'The 14-day rule')", file=sys.stderr)
         return 1
     return 0

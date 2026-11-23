@@ -4,7 +4,7 @@ The design is in [`docs/architecture.md`](docs/architecture.md) and the rules th
 
 ## Setup
 
-You need [rustup](https://rustup.rs). The toolchain is pinned in `rust-toolchain.toml`, and rustup picks it up inside the repo.
+You need [rustup](https://rustup.rs) and Python 3.11+ (for `just dep-age`; macOS's system `python3` is too old, so use Homebrew's). The toolchain is pinned in `rust-toolchain.toml`, and rustup picks it up inside the repo.
 
 ```sh
 cargo install --locked just   # task runner; `just setup` then installs the pinned version
@@ -59,9 +59,13 @@ If you add a new dependency or bump one by hand, follow the same rule. Pick a re
 - GitHub Actions
 - the dev tools in the `justfile`
 
-A version passes if it is 14+ days old or a patch bump. The check also fails on loose pins: a `stable` toolchain channel, an action not pinned to a commit SHA, or a version comment that doesn't match its SHA. This matters most for the toolchain, where Dependabot can't apply its cooldown because the registry gives no publish date.
+A version passes if it is 14+ days old. Crates, the toolchain and dev tools also pass on a patch bump; actions don't, matching their flat Dependabot cooldown. The check also fails on loose pins:
+- a `stable` toolchain channel
+- an action not pinned to a commit SHA, or a `docker://` action not pinned by `@sha256` digest
+- a version comment that doesn't match its SHA
+- an action tag with no GitHub release (commit dates can be backdated, so they don't prove age) This matters most for the toolchain, where Dependabot can't apply its cooldown because the registry gives no publish date.
 
-A PR that is too new fails until its eligible date, which the check prints. Re-run the job after that date. For a security fix that isn't a patch bump, add the `dependency-age-exempt` label and say why in the PR; the check then reports without failing. Run it locally with `just dep-age`.
+A PR that is too new fails until its eligible date, which the check prints. Re-run the job after that date. For a security fix that isn't a patch bump, add the `dependency-age-exempt` label and say why in the PR. The label waives only "too new"; pinning problems still fail. Run it locally with `just dep-age`, which needs Python 3.11+ and network access.
 
 ### The update cycle
 

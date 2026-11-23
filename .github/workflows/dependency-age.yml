@@ -4,7 +4,8 @@
 # date in its registry) and not hand edits, so this check enforces it everywhere.
 #
 # For a security fix that isn't a patch bump, add the `dependency-age-exempt`
-# label and say why in the PR. The check then reports but doesn't fail.
+# label and say why in the PR. That waives "too new" only; loose pins and
+# versions whose age can't be confirmed still fail.
 #
 # A PR that is too new fails until its eligible date. Re-run this job after that
 # date, or let Dependabot's next rebase re-run it.
@@ -13,6 +14,7 @@ name: Dependency age
 on:
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
+  merge_group:
   workflow_dispatch:
 
 permissions:
