@@ -273,6 +273,11 @@ const BUILTINS: &[(&str, &str, &[Mode])] = &[
         EDITOR,
     ),
     (
+        "rendered.jump",
+        "Show the top rendered block's source in the raw pane",
+        EDITOR,
+    ),
+    (
         "tree.down",
         "Select the next entry in the file tree",
         EDITOR,

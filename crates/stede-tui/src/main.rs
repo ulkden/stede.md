@@ -8,6 +8,7 @@
 
 mod input;
 mod probe;
+mod rendered;
 mod ui;
 
 use std::io;
@@ -266,13 +267,17 @@ fn run(
     // When a key sequence is ambiguous: the moment its timeout runs out. Other
     // events (resize, service results) don't push the deadline back.
     let mut deadline: Option<Instant> = None;
+    let mut cache = ui::RenderCache::default();
+    // Bumped when the theme changes, so the rendered pane is laid out again.
+    let mut theme_epoch = 0;
     loop {
         for request in app.take_requests() {
             services.handle(request);
         }
         let size = terminal.size()?;
         app.resize(size.width, size.height);
-        terminal.draw(|frame| ui::draw(frame, &app.view(), theme))?;
+        ui::prepare(app, &mut cache, theme, theme_epoch);
+        terminal.draw(|frame| ui::draw(frame, &app.view(), theme, &cache))?;
         if app.should_quit() {
             return Ok(());
         }
@@ -300,6 +305,7 @@ fn run(
                 // them is pure. Problems show as at start.
                 let (config, errors) = merge_config(&layers, errors);
                 *theme = theme_for(&config);
+                theme_epoch += 1;
                 app.apply_config(&config, &errors);
                 None
             }

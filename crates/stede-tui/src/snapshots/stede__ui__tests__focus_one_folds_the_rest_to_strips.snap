@@ -3,7 +3,7 @@ source: crates/stede-tui/src/ui.rs
 expression: "render(&mut app, 40, 10)"
 ---
 "R┌ Rendered ──────────────────────────┐F"
-"a│                                    │i"
+"a│No file open: pick one in the file t│i"
 "w│                                    │l"
 " │                                    │e"
 " │                                    │s"

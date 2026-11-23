@@ -16,8 +16,9 @@ use crate::key::{Key, format_keys};
 use crate::keymap::{Context, Keymap, Mode, Resolver, Scope, Step};
 use crate::layout::{Layout, LayoutOptions, PaneId};
 use crate::modal::{Modal, ModalBody, ModalStack, Row, Section};
+use crate::sync::Rendered;
 use crate::tree::Tree;
-use crate::view::{PaneView, RawView, STATUS_ROWS, StatusView, TreeView, View};
+use crate::view::{PaneView, RawView, RenderedView, STATUS_ROWS, StatusView, TreeView, View};
 
 /// Identifies the key cheat sheet among open modals, so its hotkey toggles it.
 const CHEAT_SHEET_ID: &str = "help.keys";
@@ -83,6 +84,8 @@ pub struct App {
     /// The Markdown flavor from config, passed with each open.
     flavor: Option<String>,
     line_numbers: bool,
+    /// The rendered pane's layout and place.
+    rendered: Rendered,
     /// The line-numbers setting config last gave, so a reload that didn't
     /// change it keeps the session's `<leader>n` choice.
     config_line_numbers: Option<bool>,
@@ -116,6 +119,7 @@ impl App {
             flavor: None,
             line_numbers: true,
             config_line_numbers: None,
+            rendered: Rendered::default(),
         };
         if let Some(root) = options.root {
             let (tree, first) = Tree::new(root, options.file.clone());
@@ -491,7 +495,30 @@ impl App {
             "tree.open" => self.tree_open()?,
             "view.down" | "view.up" | "view.half_down" | "view.half_up" | "view.page_down"
             | "view.page_up" | "view.top" | "view.bottom" => {
-                self.scroll_raw(&action.name, times, count)
+                // The focused reader pane scrolls; the other one follows.
+                if self.layout.focus() == PaneId::Rendered {
+                    self.scroll_rendered(&action.name, times, count);
+                    self.raw_follow_rendered();
+                } else {
+                    self.scroll_raw(&action.name, times, count);
+                    self.rendered_follow_raw();
+                }
+            }
+            "rendered.jump" => {
+                // Show the top block's source at the top of the raw pane.
+                let line = self
+                    .doc
+                    .as_ref()
+                    .and_then(|d| d.model.line_of_block(self.rendered.top_block()))
+                    .map(|l| l.saturating_sub(1));
+                if let Some(line) = line {
+                    let (_, width) = self.raw_columns();
+                    let height = self.raw_height();
+                    if let Some(doc) = self.doc.as_mut() {
+                        doc.set_position(line, 0, width, height);
+                    }
+                    self.layout.focus_pane(PaneId::Raw);
+                }
             }
             "line_numbers.toggle" => self.line_numbers = !self.line_numbers,
             "tree.close" => {
@@ -533,6 +560,102 @@ impl App {
     }
 
     /// Scrolls the raw pane by lines, half pages or pages, or to an end.
+    /// The front end's layout of the rendered pane: each block's height in
+    /// rows, for document `generation` at `width` cells. Call it when either
+    /// changes (before drawing). A new document puts the rendered pane where
+    /// the raw pane is.
+    pub fn set_rendered_layout(&mut self, generation: u64, width: usize, heights: Vec<usize>) {
+        let new_doc = self.rendered.generation != generation;
+        let height = self.raw_height();
+        self.rendered.set_layout(generation, width, heights, height);
+        if new_doc {
+            self.rendered_follow_raw();
+        }
+    }
+
+    /// Whether the rendered layout needs reporting for this document and width.
+    pub fn rendered_layout_is_current(&self, generation: u64, width: usize) -> bool {
+        self.rendered.is_current(generation, width)
+    }
+
+    /// Puts the rendered pane where the raw pane is: the block for the raw
+    /// pane's top line, at the same share of the block's raw rows.
+    fn rendered_follow_raw(&mut self) {
+        let height = self.raw_height();
+        let (_, width) = self.raw_columns();
+        let Some(doc) = self.doc.as_mut() else {
+            return;
+        };
+        let (top, row) = doc.position();
+        let line = top + 1;
+        let Some(block) = doc.model.block_at_line(line) else {
+            self.rendered.set_position(0, 0, height);
+            return;
+        };
+        let source = doc.model.blocks[block].source;
+        if source.contains(line) {
+            let first = source.start - 1;
+            let into = (first..top).map(|i| doc.rows(i, width)).sum::<usize>() + row;
+            let total = (first..source.end)
+                .map(|i| doc.rows(i, width))
+                .sum::<usize>();
+            self.rendered.follow(block, into, total, height);
+        } else {
+            // Between blocks: the next block's top.
+            self.rendered.follow(block, 0, 1, height);
+        }
+    }
+
+    /// Puts the raw pane where the rendered pane is: the top block's source,
+    /// at the same share of its raw rows as is scrolled past in the block.
+    fn raw_follow_rendered(&mut self) {
+        let height = self.raw_height();
+        let (_, width) = self.raw_columns();
+        let (block, row, rows) = self.rendered.share();
+        let Some(doc) = self.doc.as_mut() else {
+            return;
+        };
+        let Some(source) = doc.model.blocks.get(block).map(|b| b.source) else {
+            return;
+        };
+        let (first, last) = (source.start - 1, source.end - 1);
+        let total: usize = (first..=last).map(|i| doc.rows(i, width)).sum();
+        let target = row * total / rows.max(1);
+        let (mut line, mut before) = (first, 0);
+        while line < last && before + doc.rows(line, width) <= target {
+            before += doc.rows(line, width);
+            line += 1;
+        }
+        doc.set_position(line, target - before, width, height);
+    }
+
+    /// Scrolls the rendered pane by rows, half pages or pages, or to an end.
+    fn scroll_rendered(&mut self, name: &str, times: u32, count: Option<u32>) {
+        let height = self.raw_height().max(1);
+        let n = times as isize;
+        let half = (height / 2).max(1) as isize;
+        match name {
+            "view.down" => self.rendered.scroll_rows(n, height),
+            "view.up" => self.rendered.scroll_rows(-n, height),
+            "view.half_down" => self.rendered.scroll_rows(n * half, height),
+            "view.half_up" => self.rendered.scroll_rows(-n * half, height),
+            "view.page_down" => self.rendered.scroll_rows(n * height as isize, height),
+            "view.page_up" => self.rendered.scroll_rows(-n * height as isize, height),
+            // With a count, go to that source line's block, as `50G` does.
+            "view.top" | "view.bottom" if count.is_some() => {
+                // Put the raw pane on that line, and the rendered pane on it.
+                let line = (count.unwrap_or(1) as usize).saturating_sub(1);
+                let (_, width) = self.raw_columns();
+                if let Some(doc) = self.doc.as_mut() {
+                    doc.set_position(line, 0, width, height);
+                }
+                self.rendered_follow_raw();
+            }
+            "view.top" => self.rendered.set_position(0, 0, height),
+            _ => self.rendered.to_end(height),
+        }
+    }
+
     /// With a count, `gg` and `G` go to that line, as in Vim (`50G`).
     fn scroll_raw(&mut self, name: &str, times: u32, count: Option<u32>) {
         let height = self.raw_height().max(1);
@@ -660,10 +783,20 @@ impl App {
                 generation: 0,
             },
         };
+        let rendered = RenderedView {
+            model: self.doc.as_ref().map(|d| &d.model),
+            generation: self.doc.as_ref().map_or(0, |d| d.generation),
+            position: self.rendered.position(),
+            laid_out: self
+                .doc
+                .as_ref()
+                .is_some_and(|d| self.rendered.generation == d.generation),
+        };
         View {
             panes,
             tree,
             raw,
+            rendered,
             modals: self.layout.modals().iter().collect(),
             close_key: self
                 .keymap
@@ -799,7 +932,8 @@ mod tests {
         let mut app = App::new(AppOptions::default());
         app.resize(80, 12);
         press(&mut app, "<F1>");
-        for _ in 0..100 {
+        // Enough to reach the end, however long the sheet grows.
+        for _ in 0..500 {
             press(&mut app, "j");
         }
         let lines = app.modals().top().unwrap().line_count();
@@ -823,7 +957,8 @@ mod tests {
         let mut app = App::new(AppOptions::default());
         app.resize(80, 16);
         press(&mut app, "<F1>");
-        for _ in 0..50 {
+        // Enough to reach the end, however long the sheet grows.
+        for _ in 0..500 {
             press(&mut app, "j");
         }
         app.resize(80, 24);

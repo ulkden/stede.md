@@ -10,10 +10,13 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
+use stede_core::App;
 use stede_core::doc::LineKind;
 use stede_core::layout::PaneId;
 use stede_core::modal::{self, Modal, ModalBody};
 use stede_core::text::wrap_rows;
+
+pub use crate::rendered::RenderCache;
 use stede_core::view::{PaneView, RawView, STATUS_ROWS, TreeView, View};
 
 /// The shell's colors, taken from the core's theme slots.
@@ -29,6 +32,7 @@ pub struct Theme {
     pub linenr: Color,
     pub heading: Color,
     pub code: Color,
+    pub code_bg: Color,
     pub quote: Color,
     pub rule: Color,
     pub meta: Color,
@@ -91,6 +95,7 @@ impl Theme {
             linenr: get("ui.linenr"),
             heading: get("md.heading"),
             code: get("md.code"),
+            code_bg: get("md.code.bg"),
             quote: get("md.quote"),
             rule: get("md.rule"),
             meta: get("md.meta"),
@@ -169,13 +174,39 @@ fn nearest_256(r: u8, g: u8, b: u8) -> u8 {
     }
 }
 
+/// Before drawing: lays the rendered pane out (if the document, its width or
+/// the theme changed) and reports the block heights to the core, which
+/// scrolls and syncs by them. Call after `App::resize`.
+pub fn prepare(app: &mut App, cache: &mut RenderCache, theme: &Theme, theme_epoch: u64) {
+    let (generation, width, updated) = {
+        let view = app.view();
+        let width = view
+            .panes
+            .iter()
+            .find(|p| p.id == PaneId::Rendered && !p.rect.folded)
+            .map_or(0, |p| usize::from(p.rect.width.saturating_sub(2)));
+        let Some(model) = view.rendered.model else {
+            return;
+        };
+        if width == 0 {
+            return;
+        }
+        let generation = view.rendered.generation;
+        let updated = cache.update(model, generation, width, theme, theme_epoch);
+        (generation, width, updated)
+    };
+    if updated || !app.rendered_layout_is_current(generation, width) {
+        app.set_rendered_layout(generation, width, cache.heights());
+    }
+}
+
 /// Draws one frame. The view must have been built for this frame's size
-/// (`App::resize` before `App::view`).
-pub fn draw(frame: &mut Frame, view: &View, theme: &Theme) {
+/// (`App::resize` before `App::view`), and `prepare` run for the cache.
+pub fn draw(frame: &mut Frame, view: &View, theme: &Theme, cache: &RenderCache) {
     let [panes_area, status_area] =
         Layout::vertical([Constraint::Min(0), Constraint::Length(STATUS_ROWS)]).areas(frame.area());
     for pane in &view.panes {
-        draw_pane(frame, panes_area, pane, view, theme);
+        draw_pane(frame, panes_area, pane, view, theme, cache);
     }
     draw_status(frame, status_area, view, theme);
     let footer = view
@@ -193,7 +224,14 @@ fn pane_rect(area: Rect, pane: &PaneView) -> Rect {
     Rect::new(x, area.y, width, area.height)
 }
 
-fn draw_pane(frame: &mut Frame, area: Rect, pane: &PaneView, view: &View, theme: &Theme) {
+fn draw_pane(
+    frame: &mut Frame,
+    area: Rect,
+    pane: &PaneView,
+    view: &View,
+    theme: &Theme,
+    cache: &RenderCache,
+) {
     let rect = pane_rect(area, pane);
     if rect.width == 0 || rect.height == 0 {
         return;
@@ -234,8 +272,39 @@ fn draw_pane(frame: &mut Frame, area: Rect, pane: &PaneView, view: &View, theme:
     match pane.id {
         PaneId::Tree => draw_tree(frame, inner, &view.tree, pane.focused, theme),
         PaneId::Raw => draw_raw(frame, inner, &view.raw, theme),
-        PaneId::Rendered => {}
+        PaneId::Rendered => draw_rendered(frame, inner, view, cache, theme),
     }
+}
+
+/// The rendered pane: the laid-out blocks from the core's position.
+fn draw_rendered(frame: &mut Frame, area: Rect, view: &View, cache: &RenderCache, theme: &Theme) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let ready = view.rendered.model.is_some()
+        && cache.generation == view.rendered.generation
+        && cache.width == usize::from(area.width);
+    if !ready {
+        // Before a file opens (or while it loads), say what the raw pane says.
+        let message = view.raw.message.clone().unwrap_or_default();
+        frame.render_widget(
+            Paragraph::new(Line::styled(message, Style::new().fg(theme.dim))),
+            area,
+        );
+        return;
+    }
+    let (block, row) = view.rendered.position;
+    let height = usize::from(area.height);
+    let lines: Vec<Line> = cache
+        .blocks
+        .iter()
+        .skip(block)
+        .flatten()
+        .skip(row)
+        .take(height)
+        .cloned()
+        .collect();
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
 /// The raw pane: the file's lines from the top of the view, wrapped to the
@@ -491,9 +560,12 @@ mod tests {
 
     fn draw_only(app: &mut App, width: u16, height: u16) -> Terminal<TestBackend> {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        let theme = Theme::default();
+        let mut cache = RenderCache::default();
         app.resize(width, height);
+        prepare(app, &mut cache, &theme, 0);
         terminal
-            .draw(|f| draw(f, &app.view(), &Theme::default()))
+            .draw(|f| draw(f, &app.view(), &theme, &cache))
             .unwrap();
         terminal
     }
@@ -562,7 +634,8 @@ mod tests {
         let mut app = App::new(AppOptions::default());
         app.resize(80, 16);
         press(&mut app, "<F1>");
-        for _ in 0..50 {
+        // Enough to reach the end, however long the sheet grows.
+        for _ in 0..500 {
             press(&mut app, "j");
         }
         let screen = render(&mut app, 80, 16);
@@ -694,6 +767,65 @@ mod tests {
         app.resize(40, 7);
         press(&mut app, "3j");
         insta::assert_snapshot!(render(&mut app, 40, 7));
+    }
+
+    fn open_doc(app: &mut App, text: &str) {
+        use stede_core::io::{Document, ServiceEvent};
+        app.handle_event(ServiceEvent::Opened {
+            path: "/n/a.md".into(),
+            result: Ok(Document {
+                path: "/n/a.md".into(),
+                text: text.into(),
+                model: stede_markdown::render(text, stede_markdown::Flavor::Gfm),
+                markdown: true,
+            }),
+        });
+    }
+
+    const SAMPLE: &str = "# Reader\n\nSome **bold** and `code`, with a [link](https://x.y).\n\n- [x] done\n- [ ] todo\n\n> [!TIP]\n> Notes here.\n\n| A | B |\n|---|--:|\n| one | 2 |\n\n```rust\nfn main() {}\n```\n\n---\n";
+
+    #[test]
+    fn rendered_pane_beside_the_raw_pane() {
+        let mut app = App::new(AppOptions {
+            file: Some("/n/a.md".into()),
+            ..AppOptions::default()
+        });
+        open_doc(&mut app, SAMPLE);
+        insta::assert_snapshot!(render(&mut app, 100, 30));
+    }
+
+    #[test]
+    fn scrolling_one_pane_moves_the_other() {
+        let mut app = App::new(AppOptions {
+            file: Some("/n/a.md".into()),
+            ..AppOptions::default()
+        });
+        let text: String = (1..=60).map(|i| format!("Paragraph {i}.\n\n")).collect();
+        open_doc(&mut app, &text);
+        // Draw once so the layout reaches the core.
+        render(&mut app, 80, 12);
+        press(&mut app, "20j");
+        render(&mut app, 80, 12);
+        assert_eq!(app.view().raw.lines[0].0, 21);
+        assert_eq!(
+            app.view().rendered.position.0,
+            10,
+            "line 21 is paragraph 11's"
+        );
+        // Now drive from the rendered pane: the raw pane follows.
+        press(&mut app, "<C-l>");
+        press(&mut app, "4j");
+        render(&mut app, 80, 12);
+        let (block, _) = app.view().rendered.position;
+        assert_eq!(block, 12);
+        assert_eq!(
+            app.view().raw.lines[0].0,
+            25,
+            "paragraph 13 starts on line 25"
+        );
+        // Enter jumps the raw pane to the top block and focuses it.
+        press(&mut app, "<CR>");
+        assert_eq!(app.layout().focus(), stede_core::layout::PaneId::Raw);
     }
 
     #[test]
