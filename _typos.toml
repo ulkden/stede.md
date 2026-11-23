@@ -4,4 +4,4 @@ ratatui = "ratatui"
 Ratatui = "Ratatui"
 
 [files]
-extend-exclude = ["LICENSE", "Cargo.lock", "*.snap"]
+extend-exclude = ["LICENSE*", "Cargo.lock", "*.snap"]

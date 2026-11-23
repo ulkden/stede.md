@@ -58,6 +58,10 @@ just layers                 # headless crates must not depend on UI crates
 cargo run -p stede-tui      # runs `stede`
 ```
 
+## Pull requests
+
+Every PR Claude opens goes through the `stede-pr-review` skill (`.claude/skills/stede-pr-review/`). Round 1: review, fix, push. Round 2: review again, fix, push. Once CI is green, Claude squash-merges the PR itself and moves on. Effort scales with PR size, as the skill describes. Refine the skill when it misses something or flags noise.
+
 ## Roadmap
 
 1. **Phase 0, spike:** prove the risky parts: comrak source positions driving scroll sync, kitty text sizing and Sixel in target terminals, key handling in Windows Terminal under WSL.
