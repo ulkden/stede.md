@@ -68,6 +68,8 @@ Report everything you find in one pass; don't hold findings back for round 2. Ro
 
 ### 6. Fix
 
+For a phase step built by the `implementer` agent, don't fix anything yourself while the step is in flight, including `just ci` failures from step 2. Send them and the ranked table to that implementer with `SendMessage`, as "Phase steps" in `CLAUDE.md` describes. Its reply gives the Disposition column: "fixed" becomes "Fixed in <sha>", and "follow-up", "won't fix" and "disputed" carry over as written. It follows the rules below except the last one: skill updates are yours, made after the step merges.
+
 - Fix Critical, Major and the in-scope Minor findings. Follow `CLAUDE.md` and add or update tests for behavior you change. Run `just ci`.
 - Commit as `Address review round <N>` with a short list of what changed, then push.
 - If a finding is wrong on a second look, say so in the PR comment rather than silently dropping it.

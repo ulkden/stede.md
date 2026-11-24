@@ -64,6 +64,19 @@ cargo run -p stede-tui      # runs `stede`
 
 Every PR Claude opens goes through the `stede-pr-review` skill (`.claude/skills/stede-pr-review/`). Round 1: review, fix, push. Round 2: review again, fix, push. Once CI is green, Claude squash-merges the PR itself and moves on. Effort scales with PR size, as the skill describes. Refine the skill when it misses something or flags noise.
 
+### Phase steps: the main session plans and reviews, the implementer builds
+
+On trial for phases 2 and 3. The main session doesn't write a step's code itself. It writes the phase plan, `docs/phase-N.md`, in a PR of its own before the first step. Then, for each step:
+
+1. Write a brief that gives the step, the branch name, the `docs/architecture.md` sections that apply, what's out of scope, which dependencies are allowed, any scope change to write into the phase doc, and any traps that earlier review rounds turned up.
+2. Spawn the `implementer` agent (`.claude/agents/implementer.md`, on Sonnet) with the brief. It opens the PR, with its questions added to `docs/phase-N-questions.md`, and reports back.
+3. Check its "Decisions I made" against this file, and its questions in the PR.
+4. Run the `stede-pr-review` rounds as usual, but send each round's findings to the same implementer with `SendMessage`, so it keeps its context. It fixes and pushes; write the round's PR comment from its reply. When a fix needs a design call, make the call and tell the implementer.
+5. Merge as the skill says. Each step gets a new implementer; don't reuse one across steps.
+6. If an implementer fails a step, close its PR with `gh pr close <n> --delete-branch`, run `git switch main && git branch -D <branch>`, and spawn a new one with a revised brief. After a second failure, build the step yourself and note it in the PR body.
+
+The implementer works in the main session's checkout, so from spawning it until the step merges, the main session leaves the working tree alone: no edits, no branch switches, and `just ci` failures go to the implementer too. Skill fixes that a review turns up wait until the step merges. Keep the main session's context small: let the review subagents read the full diff, and start a new session at phase boundaries. The phase doc and the questions file carry the state between sessions.
+
 ## Roadmap
 
 1. **Phase 0, spike:** prove the risky parts: comrak source positions driving scroll sync, kitty text sizing and Sixel in target terminals, key handling in Windows Terminal under WSL.
