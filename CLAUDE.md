@@ -73,9 +73,9 @@ On trial for phases 2 and 3. The main session doesn't write a step's code itself
 3. Check its "Decisions I made" against this file, and its questions in the PR.
 4. Run the `stede-pr-review` rounds as usual, but send each round's findings to the same implementer with `SendMessage`, so it keeps its context. It fixes and pushes; write the round's PR comment from its reply. When a fix needs a design call, make the call and tell the implementer.
 5. Merge as the skill says. Each step gets a new implementer; don't reuse one across steps.
-6. If an implementer fails a step twice, build that step yourself and note it in the PR body.
+6. If an implementer fails a step, close its PR with `gh pr close <n> --delete-branch`, run `git switch main && git branch -D <branch>`, and spawn a new one with a revised brief. After a second failure, build the step yourself and note it in the PR body.
 
-The implementer works in the main session's checkout, so from spawning it until the step merges, the main session leaves the working tree alone: no edits, no branch switches. Keep the main session's context small: let the review subagents read the full diff, and start a new session at phase boundaries. The phase doc and the questions file carry the state between sessions.
+The implementer works in the main session's checkout, so from spawning it until the step merges, the main session leaves the working tree alone: no edits, no branch switches, and `just ci` failures go to the implementer too. Skill fixes that a review turns up wait until the step merges. Keep the main session's context small: let the review subagents read the full diff, and start a new session at phase boundaries. The phase doc and the questions file carry the state between sessions.
 
 ## Roadmap
 

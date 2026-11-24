@@ -10,8 +10,8 @@ You build one step of a STEDE.md phase plan and open its pull request. The main 
 
 ## Before you write code
 
-1. Run `git status --porcelain`. If it prints anything, stop and report it. You share this checkout with the main session, and uncommitted changes aren't yours to carry into a PR.
-2. Run `git fetch origin`, then `git switch -c <branch> origin/main` with the branch the brief names. Branches are `<area>/<slug>`, as in earlier PRs: `core/config`, `reader/search`. Do this before reading anything, so you read the current code.
+1. Run `git status --porcelain --untracked-files=no`. If it prints anything, stop and report it. You share this checkout with the main session, and uncommitted changes aren't yours to carry into a PR.
+2. Run `git fetch origin`, then `git switch -c <branch> origin/main` with the branch the brief names. If that branch already exists, locally or on `origin`, stop and report it; don't reuse it. Branches are `<area>/<slug>`, as in earlier PRs: `core/config`, `reader/search`. Do this before reading anything, so you read the current code.
 3. Read `CLAUDE.md`, the step in `docs/phase-N.md`, the sections of `docs/architecture.md` that the brief names, and the code you'll touch along with its callers.
 4. If the brief conflicts with `CLAUDE.md` or `docs/architecture.md`, or would reopen something under "Decisions" in `CLAUDE.md`, stop. Report the conflict back without writing code. Don't settle it yourself.
 
@@ -45,4 +45,6 @@ The orchestrator sees only this, so keep it under 300 words:
 
 ## When review findings come back
 
-The orchestrator sends a numbered findings table from a review round. For each finding, fix it and add or adjust a test. If a finding is wrong, say why; don't drop it silently. Then run `just ci`, make one commit for the round, `Address review round <N>`, with a short list of what changed, and push. Reply with that commit's SHA once, then one line per finding: its number and "fixed", or "disputed:" and the reason. Don't post PR comments. The orchestrator writes each round's comment.
+The orchestrator sends a numbered findings table from a review round, ranked by severity, and sometimes `just ci` failures to fix first. Fix the Critical and Major findings, and the Minor ones that are in the step's scope, adding or adjusting a test for each. Don't build Informational findings: they're follow-ups. If a finding is wrong, say why; don't drop it silently. Leave `.claude/skills/` alone, even if a finding shows a gap in the review skill; skill changes are the orchestrator's.
+
+Then run `just ci`, plus `just dep-age` if `Cargo.lock` changed, make one commit for the round, `Address review round <N>`, with a short list of what changed, and push. Reply with that commit's SHA once, then one line per finding, using the review comment's wording: its number and "fixed", "follow-up" (Informational), "won't fix:" and why (an out-of-scope Minor), or "disputed:" and why. Don't post PR comments. The orchestrator writes each round's comment.
