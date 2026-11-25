@@ -28,7 +28,7 @@ Collected during the autonomous phase 1 run. Each entry gives the question, the 
     **Answer:** hide them by default, and add a key and a `[tree]` setting to show hidden and ignored files. That's a follow-up PR.
 9. **What the watcher watches.** Each folder the tree has listed is watched, but not recursively, so a huge `node_modules` costs nothing until you open it. Changes to folders you've never opened aren't seen until you open them, which is when they're listed anyway. Is that OK?
 
-    **Answer:** watch the whole tree recursively, skipping ignored paths, so changes in folders that haven't been opened are seen too. Built in step 11: capped at 4,096 folders, and not on WSL's polled `/mnt` paths.
+    **Answer:** watch the whole tree recursively, skipping ignored paths, so changes in folders that haven't been opened are seen too. Built in step 11: capped at 4,096 folders, and not on WSL's polled `/mnt` paths. The services now see changes anywhere in the tree, but nothing in the tree shows them until a folder is opened (which lists it fresh anyway); the watch is groundwork for features that need it, such as project search.
 10. **Raw-pane highlighting without tree-sitter-md, for now.** CLAUDE.md gives raw-pane highlighting to tree-sitter-md. Its strength is fast incremental reparsing while you type, and the reader doesn't edit. So step 6a colors raw lines from comrak's block ranges (headings, code, quotes, rules, front matter), and tree-sitter-md arrives with the editor in phase 2, along with its text objects. That keeps a C-compiled dependency out of the reader. Is deferring it OK?
 
     **Answer:** defer tree-sitter-md to phase 2, where it arrives with the editor.
