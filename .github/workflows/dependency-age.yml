@@ -3,8 +3,8 @@
 # Dependabot's cooldown covers most of this, but not the toolchain (no publish
 # date in its registry) and not hand edits, so this check enforces it everywhere.
 #
-# For a security fix that isn't a patch bump, add the `dependency-age-exempt`
-# label and say why in the PR. That waives "too new" only; loose pins and
+# For a security fix that isn't a patch bump, or a one-off early release the
+# owner has approved, add the `dependency-age-exempt` label and say why in the PR. That waives "too new" only; loose pins and
 # versions whose age can't be confirmed still fail.
 #
 # A PR that is too new fails until its eligible date. Re-run this job after that

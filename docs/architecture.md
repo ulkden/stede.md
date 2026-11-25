@@ -86,7 +86,7 @@ Every pick below is a maintained Rust crate; the only parts we write from scratc
 | Terminal I/O | crossterm | MIT | Same code on macOS, Linux and WSL; mouse, paste, kitty keyboard flags | termion (Unix only) |
 | Drawing and layout | [ratatui](https://ratatui.rs/highlights/v030/) 0.30 | MIT | Most used Rust TUI kit; 0.30 split it into smaller crates | Write to crossterm by hand |
 | Text buffer | ropey | MIT | Rope: cheap edits and line lookups in large files; Helix uses it | `String` per line |
-| Raw pane highlighting | tree-sitter + [tree-sitter-md](https://docs.rs/tree-sitter-md) | MIT | Incremental; separate block and inline grammars; injections color code blocks by language | Regex highlighter |
+| Raw pane highlighting (phase 2; the reader colors raw lines from comrak's block ranges) | tree-sitter + [tree-sitter-md](https://docs.rs/tree-sitter-md) | MIT | Incremental; separate block and inline grammars; injections color code blocks by language | Regex highlighter |
 | Full parse for the rendered pane | [comrak](https://lib.rs/crates/comrak) | BSD-2-Clause | Passes all 652 CommonMark and 670 GFM spec tests; gives source positions so the two panes can scroll together | pulldown-cmark (MIT) |
 | Code blocks in the rendered pane | syntect | MIT; bundled syntax files need an audit | Sublime syntaxes and themes, no extra grammars to ship | tree-sitter-highlight (MIT) |
 | Images | [ratatui-image](https://docs.rs/crate/ratatui-image/latest), with icy\_sixel | MIT; Apache-2.0 | kitty, Sixel, iTerm2 and half-block fallback in one widget | Show alt text |
@@ -142,8 +142,8 @@ flowchart TB
 
 | Crate | Holds | Depends on UI? |
 | --- | --- | --- |
-| `stede-core` | Buffers, Vim engine, keymaps, commands, layout model, config | No |
-| `stede-markdown` | The Markdown document type: both parsers, render model, outline | No |
+| `stede-core` | Buffers, Vim engine, keymaps, commands, layout model, config, render model types | No |
+| `stede-markdown` | The Markdown document type: both parsers (which build the render model), outline | No |
 | `stede-services` | File tree, watcher, linter hub, external commands | No |
 | `stede-tui` | The binary: ratatui drawing, crossterm input, images | Yes |
 | `stede-gui` (later) | The native window | Yes |
@@ -211,7 +211,7 @@ The layout model is a tree of splits under the hood, even though v1 only uses on
 
 ## Modals for input and output
 
-Every prompt and every result list opens in a modal over the editor, and one key closes any of them: `Esc` by default, remappable. The panes stay as they were underneath, and focus goes back to where you were when the modal closes.
+Every prompt and every result list opens in a modal over the editor, and one key closes any of them: `Esc` by default, remappable. The one exception is search (`/`, `?`) and the `:` command line: they type on the bottom line, as in Vim, so search matches stay visible while you type. `Esc` closes them too, and a modal that opens over one drops what was typed. The panes stay as they were underneath, and focus goes back to where you were when the modal closes.
 
 | Kind | Used for | Keys inside |
 | --- | --- | --- |
@@ -222,7 +222,7 @@ Every prompt and every result list opens in a modal over the editor, and one key
 
 - **One close key everywhere.** It is set once and applies to every modal. Typing `:` commands still happens on the bottom line, but any command that returns a list or text shows it in an output modal.
 - **Vim keys in inputs (optional).** With `vim_in_inputs = true`, the first `Esc` drops to Normal mode inside the prompt so you can use `b`, `w`, `ciw`; the second `Esc` closes it.
-- **Stacking.** A modal can open another (the cheat sheet from inside a picker, say). The close key shuts the top one only; `close_all` shuts them all.
+- **Stacking.** A modal can open another (the cheat sheet from inside a picker, say). The close key shuts the top one only; `modal.close_all` (`<C-c>` by default) shuts them all.
 - **Output stays reachable.** The last output modal can be reopened with `<leader>o`, so you do not lose a lint list or command output by closing it.
 - **Size and place.** Modals are centered and sized to their content, up to a share of the screen you set. Long output scrolls.
 
@@ -230,8 +230,8 @@ The modal stack lives in the core's layout model, next to the panes, so the nati
 
 ```toml
 [keys.modal]
-close     = "<Esc>"
-close_all = "<C-c>"
+"<Esc>" = "modal.close"
+"<C-c>" = "modal.close_all"
 
 [keys.normal]
 "<leader>o" = "modal.reopen_last"
@@ -376,7 +376,7 @@ A project sets its flavor in `.stede/config.toml`; a file can override it in fro
 
 **Two parsers, two jobs**
 
-- **tree-sitter-md** runs on every keystroke and only reparses what changed. It colors the raw pane and powers Markdown text objects and the outline.
+- **tree-sitter-md** runs on every keystroke and only reparses what changed. It colors the raw pane and powers Markdown text objects and the outline. It arrives in phase 2 with the editor; until then the raw pane is colored from comrak's block ranges.
 - **comrak** runs on a worker thread after a short pause in typing. It builds the full tree with source positions and feeds the rendered pane. For files of normal size a full reparse is cheap; if huge files lag, we reparse only the top-level blocks that changed.
 
 The core turns comrak's tree into a **render model**: blocks with style tokens (`Heading(2)`, `Code(lang)`, `Alert(Warning)`) and the source lines each came from. The front end decides what a token looks like. That is what lets the native window reuse it, and what keeps the two panes scrolled together.
