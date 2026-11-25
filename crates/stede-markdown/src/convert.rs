@@ -222,7 +222,7 @@ impl Builder {
                 let text = literal.strip_suffix('\n').unwrap_or(&literal);
                 self.push(BlockKind::Html(text.to_owned()), range);
             }
-            NodeValue::ThematicBreak => self.push(BlockKind::Rule, range),
+            NodeValue::ThematicBreak(_) => self.push(BlockKind::Rule, range),
             NodeValue::FrontMatter(text) => {
                 self.push(BlockKind::FrontMatter(strip_fences(&lf(text))), range);
             }
@@ -262,6 +262,8 @@ fn alert_kind(t: AlertType) -> AlertKind {
         AlertType::Important => AlertKind::Important,
         AlertType::Warning => AlertKind::Warning,
         AlertType::Caution => AlertKind::Caution,
+        // comrak 1.x marks the enum non-exhaustive: a new kind reads as a note.
+        _ => AlertKind::Note,
     }
 }
 
@@ -281,7 +283,7 @@ fn strip_fences(text: &str) -> String {
     while lines.last().is_some_and(|l| l.trim().is_empty()) {
         lines.pop();
     }
-    // comrak 0.59 opens and closes front matter with the same `---` line.
+    // comrak opens and closes front matter with the same `---` line.
     let body = match lines.as_slice() {
         [first, middle @ .., last] if first.trim() == "---" && last.trim() == "---" => middle,
         [first, rest @ ..] if first.trim() == "---" => rest,
@@ -388,9 +390,9 @@ fn inlines<'a>(node: &'a AstNode<'a>) -> Vec<Span> {
                 out.emit(tag, &ctx);
                 continue;
             }
-            NodeValue::Emph => ctx.style.emph = true,
-            NodeValue::Strong => ctx.style.strong = true,
-            NodeValue::Strikethrough => ctx.style.strike = true,
+            NodeValue::Emph(_) => ctx.style.emph = true,
+            NodeValue::Strong(_) => ctx.style.strong = true,
+            NodeValue::Strikethrough(_) => ctx.style.strike = true,
             NodeValue::Underline => ctx.style.underline = true,
             NodeValue::Link(link) => {
                 next_group += 1;
