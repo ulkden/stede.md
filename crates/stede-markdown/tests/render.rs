@@ -296,3 +296,9 @@ fn footnotes_stay_where_they_are_written() {
     let starts: Vec<usize> = model.blocks.iter().map(|b| b.source.start).collect();
     assert_eq!(starts, vec![1, 3, 5, 7]);
 }
+
+#[test]
+fn footnote_labels_keep_their_case() {
+    let shown = dump(&render("a[^Note]\n\n[^note]: def\n", Flavor::Gfm));
+    assert!(shown.contains("[^Note]"), "{shown}");
+}

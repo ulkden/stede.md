@@ -748,7 +748,7 @@ Decided on 22 November 2026. AI hooks wait until later, and two small questions 
 - [Ratatui 0.30 release notes](https://ratatui.rs/highlights/v030/)
 - [kitty text sizing protocol](https://sw.kovidgoyal.net/kitty/text-sizing-protocol/) and [terminal support for OSC 66](https://terminfo-dev.pages.dev/extensions/osc66-text-sizing)
 - [ratatui-image](https://docs.rs/crate/ratatui-image/latest)
-- [comrak](https://lib.rs/crates/comrak) and [comrak 0.58 docs](https://docs.rs/crate/comrak/0.58.0)
+- [comrak](https://lib.rs/crates/comrak) and [comrak 1.2 docs](https://docs.rs/comrak/1.2.0)
 - [tree-sitter-md](https://docs.rs/tree-sitter-md)
 - [rumdl](https://docs.rs/crate/rumdl/0.3.1) and [rumdl LSP docs](https://docs.rs/crate/rumdl/0.2.3/source/docs/lsp.md)
 - [edtui](https://docs.rs/crate/edtui/latest)

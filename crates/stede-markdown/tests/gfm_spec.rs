@@ -55,7 +55,7 @@ const NESTED_STRONG: &str = "comrak nests <strong> where GFM's renderer collapse
     bold, and the render model's style flags are identical";
 const AUTOLINK_IN_CORE: &str = "a core (non-extension) example run with the autolink extension \
     on, which links bare URLs and emails as GFM does";
-const NO_TAGFILTER: &str = "comrak 0.59 has no tagfilter; it only escapes tags in HTML output, \
+const NO_TAGFILTER: &str = "comrak has no tagfilter; it only escapes tags in HTML output, \
     which the terminal never produces";
 
 struct Example {

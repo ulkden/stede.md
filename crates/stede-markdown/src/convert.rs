@@ -152,14 +152,22 @@ impl Builder {
             NodeValue::BlockQuote | NodeValue::MultilineBlockQuote(_) => {
                 stack.push(Task::Enter(node, Container::Quote));
             }
-            NodeValue::Alert(alert) => stack.push(Task::Enter(
-                node,
-                Container::Alert {
-                    kind: alert_kind(alert.alert_type),
-                    title: alert.title.clone(),
-                    continuation: false,
-                },
-            )),
+            NodeValue::Alert(alert) => {
+                let kind = alert_kind(alert.alert_type);
+                stack.push(Task::Enter(
+                    node,
+                    Container::Alert {
+                        // A kind we have no look for (a newer comrak) is drawn
+                        // as a note, but keeps its own name.
+                        kind: kind.unwrap_or(AlertKind::Note),
+                        title: alert.title.clone().or_else(|| {
+                            kind.is_none()
+                                .then(|| alert.alert_type.default_title().to_owned())
+                        }),
+                        continuation: false,
+                    },
+                ));
+            }
             NodeValue::List(list) => {
                 let items: Vec<_> = node.children().collect();
                 for (i, item) in items.into_iter().enumerate().rev() {
@@ -222,7 +230,7 @@ impl Builder {
                 let text = literal.strip_suffix('\n').unwrap_or(&literal);
                 self.push(BlockKind::Html(text.to_owned()), range);
             }
-            NodeValue::ThematicBreak => self.push(BlockKind::Rule, range),
+            NodeValue::ThematicBreak(_) => self.push(BlockKind::Rule, range),
             NodeValue::FrontMatter(text) => {
                 self.push(BlockKind::FrontMatter(strip_fences(&lf(text))), range);
             }
@@ -255,14 +263,17 @@ fn push_children<'a>(node: &'a AstNode<'a>, stack: &mut Vec<Task<'a>>) {
     stack.extend(children.into_iter().rev().map(Task::Visit));
 }
 
-fn alert_kind(t: AlertType) -> AlertKind {
-    match t {
+/// The reader's kind for an alert, or `None` for one it has no look for
+/// (comrak 1.x marks the enum non-exhaustive).
+fn alert_kind(t: AlertType) -> Option<AlertKind> {
+    Some(match t {
         AlertType::Note => AlertKind::Note,
         AlertType::Tip => AlertKind::Tip,
         AlertType::Important => AlertKind::Important,
         AlertType::Warning => AlertKind::Warning,
         AlertType::Caution => AlertKind::Caution,
-    }
+        _ => return None,
+    })
 }
 
 fn align(a: TableAlignment) -> Align {
@@ -281,7 +292,7 @@ fn strip_fences(text: &str) -> String {
     while lines.last().is_some_and(|l| l.trim().is_empty()) {
         lines.pop();
     }
-    // comrak 0.59 opens and closes front matter with the same `---` line.
+    // comrak opens and closes front matter with the same `---` line.
     let body = match lines.as_slice() {
         [first, middle @ .., last] if first.trim() == "---" && last.trim() == "---" => middle,
         [first, rest @ ..] if first.trim() == "---" => rest,
@@ -381,16 +392,26 @@ fn inlines<'a>(node: &'a AstNode<'a>) -> Vec<Span> {
                 ctx.group = next_group;
                 ctx.style.footnote_ref = true;
                 ctx.link = Some(r.name.clone());
-                out.emit(&format!("[^{}]", r.name), &ctx);
+                // The label as written (comrak normalizes `name`'s case).
+                let label = if r.texts.is_empty() {
+                    format!("^{}", r.name)
+                } else {
+                    r.texts
+                        .iter()
+                        .map(|(t, _)| t.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                };
+                out.emit(&format!("[{label}]"), &ctx);
                 continue;
             }
             NodeValue::EscapedTag(tag) => {
                 out.emit(tag, &ctx);
                 continue;
             }
-            NodeValue::Emph => ctx.style.emph = true,
-            NodeValue::Strong => ctx.style.strong = true,
-            NodeValue::Strikethrough => ctx.style.strike = true,
+            NodeValue::Emph(_) => ctx.style.emph = true,
+            NodeValue::Strong(_) => ctx.style.strong = true,
+            NodeValue::Strikethrough(_) => ctx.style.strike = true,
             NodeValue::Underline => ctx.style.underline = true,
             NodeValue::Link(link) => {
                 next_group += 1;
