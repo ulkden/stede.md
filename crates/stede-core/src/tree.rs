@@ -111,12 +111,17 @@ impl Tree {
             }
         }
         let rows = self.rows();
-        if let (Some(selected), Some(at)) = (self.selected.as_ref(), was_at)
+        if let (Some(selected), Some(at)) = (self.selected.clone(), was_at)
             && !rows.is_empty()
-            && !rows.iter().any(|r| &r.path == selected)
-            && rows_before.iter().any(|r| &r.path == selected)
+            && !rows.iter().any(|r| r.path == selected)
+            && rows_before.iter().any(|r| r.path == selected)
         {
-            self.selected = Some(rows[at.min(rows.len() - 1)].path.clone());
+            // The first row after it that's still there, else the nearest
+            // before it: several rows can go at once (H hides every dotfile).
+            let kept = |r: &&TreeRow| rows.iter().any(|n| n.path == r.path);
+            let next = rows_before[at..].iter().find(kept);
+            let prev = rows_before[..at].iter().rev().find(kept);
+            self.selected = next.or(prev).map(|r| r.path.clone());
         }
         Some(forgotten)
     }

@@ -1565,6 +1565,28 @@ mod tests {
         });
         let view = app.view();
         assert_eq!(view.tree.rows[view.tree.selected.unwrap()].name, "a.md");
+        // Several go at once: the first one after it that stays is chosen.
+        app.handle_event(ServiceEvent::Listed {
+            dir: "/p".into(),
+            result: Ok(vec![
+                entry("/p/docs", true),
+                entry("/p/.a", false),
+                entry("/p/.b", false),
+                entry("/p/c.md", false),
+                entry("/p/d.md", false),
+            ]),
+        });
+        press(&mut app, "gg2j");
+        app.handle_event(ServiceEvent::Listed {
+            dir: "/p".into(),
+            result: Ok(vec![
+                entry("/p/docs", true),
+                entry("/p/c.md", false),
+                entry("/p/d.md", false),
+            ]),
+        });
+        let view = app.view();
+        assert_eq!(view.tree.rows[view.tree.selected.unwrap()].name, "c.md");
     }
 
     #[test]

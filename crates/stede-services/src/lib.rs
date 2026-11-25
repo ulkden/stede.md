@@ -12,7 +12,7 @@ mod files;
 
 pub use files::{MAX_FILE_BYTES, list_dir, open_file};
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -52,6 +52,11 @@ struct Shared {
     inflight: Mutex<HashMap<PathBuf, bool>>,
     /// What listings show; set by the core.
     filter: Mutex<TreeFilter>,
+    /// Folders the tree has asked to stop watching, newest request winning:
+    /// `handle` updates it in request order (a listing clears it, `Unwatch`
+    /// sets it), and the watch and unwatch tasks check it under the watch
+    /// lock, so whichever runs last can't undo a newer request.
+    tree_unwanted: Mutex<HashSet<PathBuf>>,
     /// Files being opened, and the flavor of a request that came in during
     /// the read (`Some`): the file is read again with the newest flavor.
     opening: Mutex<HashMap<PathBuf, Option<Option<String>>>>,
@@ -68,6 +73,23 @@ struct Watch {
     /// (FSEvents on macOS) may report resolved paths, such as
     /// `/private/tmp/...` for `/tmp/...`; events are mapped back with this.
     resolved: HashMap<PathBuf, PathBuf>,
+    /// Who wants each folder watched. The tree and the config watcher can
+    /// share one (`.stede/` open in the tree): the OS watch goes only when
+    /// neither does.
+    owners: HashMap<PathBuf, Owners>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct Owners {
+    tree: bool,
+    config: bool,
+}
+
+/// Who asks for a watch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Owner {
+    Tree,
+    Config,
 }
 
 impl Services {
@@ -85,10 +107,12 @@ impl Services {
                 native: None,
                 poll: None,
                 resolved: HashMap::new(),
+                owners: HashMap::new(),
             }),
             config_files: Mutex::new(Vec::new()),
             inflight: Mutex::new(HashMap::new()),
             filter: Mutex::new(TreeFilter::default()),
+            tree_unwanted: Mutex::new(HashSet::new()),
             opening: Mutex::new(HashMap::new()),
         });
         {
@@ -110,6 +134,11 @@ impl Services {
     pub fn handle(&self, request: Request) {
         match request {
             Request::ListDir(dir) => {
+                self.shared
+                    .tree_unwanted
+                    .lock()
+                    .expect("unwanted lock")
+                    .remove(&dir);
                 {
                     let mut inflight = self.shared.inflight.lock().expect("inflight lock");
                     if let Some(again) = inflight.get_mut(&dir) {
@@ -127,6 +156,11 @@ impl Services {
                 *self.shared.filter.lock().expect("filter lock") = filter;
             }
             Request::Unwatch(dir) => {
+                self.shared
+                    .tree_unwanted
+                    .lock()
+                    .expect("unwanted lock")
+                    .insert(dir.clone());
                 let shared = Arc::clone(&self.shared);
                 self.runtime()
                     .spawn_blocking(move || shared.unwatch_dir(&dir));
@@ -201,7 +235,7 @@ impl Shared {
         loop {
             // Watch first, so a change during the listing isn't missed; and
             // every time, so a folder deleted and made again is watched again.
-            self.watch_dir(&dir);
+            self.watch_dir(&dir, Owner::Tree);
             // Read each time: a listing asked for again after the filter
             // changed shows the new one.
             let filter = *self.filter.lock().expect("filter lock");
@@ -224,12 +258,12 @@ impl Shared {
         let files = self.config_files.lock().expect("config lock").clone();
         for file in &files {
             if let Some(dir) = file.ancestors().skip(1).find(|d| d.is_dir()) {
-                self.watch_dir(dir);
+                self.watch_dir(dir, Owner::Config);
             }
         }
     }
 
-    fn watch_dir(&self, dir: &Path) {
+    fn watch_dir(&self, dir: &Path, owner: Owner) {
         let resolved = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
         // The resolved path decides: a symlink into `/mnt/c` needs polling.
         let poll = needs_polling(&resolved);
@@ -237,6 +271,21 @@ impl Shared {
         let Some(events) = watch.events.clone() else {
             return;
         };
+        // An `Unwatch` the tree sent after this listing's request wins.
+        if owner == Owner::Tree
+            && self
+                .tree_unwanted
+                .lock()
+                .expect("unwanted lock")
+                .contains(dir)
+        {
+            return;
+        }
+        let owners = watch.owners.entry(dir.to_path_buf()).or_default();
+        match owner {
+            Owner::Tree => owners.tree = true,
+            Owner::Config => owners.config = true,
+        }
         watch.resolved.insert(dir.to_path_buf(), resolved);
         // A folder that can't be watched still lists; it just won't refresh
         // on its own until it's listed (and watched) again.
@@ -258,8 +307,26 @@ impl Shared {
         }
     }
 
+    /// Stops the tree's watch on a folder; the OS watch goes unless the
+    /// config watcher still wants it.
     fn unwatch_dir(&self, dir: &Path) {
         let mut watch = self.watch.lock().expect("watch lock");
+        // A listing the tree asked for after this `Unwatch` wants it watched.
+        if !self
+            .tree_unwanted
+            .lock()
+            .expect("unwanted lock")
+            .contains(dir)
+        {
+            return;
+        }
+        if let Some(owners) = watch.owners.get_mut(dir) {
+            owners.tree = false;
+            if owners.config {
+                return;
+            }
+        }
+        watch.owners.remove(dir);
         watch.resolved.remove(dir);
         if let Some(w) = watch.native.as_mut() {
             let _ = w.unwatch(dir);
@@ -512,6 +579,61 @@ mod tests {
     }
 
     #[test]
+    fn the_tree_unwatching_a_config_folder_keeps_config_reloads() {
+        let dir = temp("shared-watch");
+        let stede = dir.join(".stede");
+        std::fs::create_dir(&stede).unwrap();
+        let file = stede.join("config.toml");
+        std::fs::write(&file, "").unwrap();
+        let (sink, rx) = collecting();
+        let services = Services::start(sink).unwrap();
+        services.watch_config(vec![file.clone()]);
+        // The tree opens .stede/, then drops it (dotfiles hidden).
+        services.handle(Request::ListDir(stede.clone()));
+        assert!(wait_for(&rx, |e| matches!(e, ServiceEvent::Listed { .. })));
+        services.handle(Request::Unwatch(stede.clone()));
+        std::thread::sleep(Duration::from_millis(300));
+        std::fs::write(&file, "[ui]\n").unwrap();
+        assert!(
+            wait_for(&rx, |e| matches!(
+                e,
+                ServiceEvent::ConfigChanged { layers, .. } if layers.iter().any(|l| l.text == "[ui]\n")
+            )),
+            "the config watcher still sees its folder"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_newest_tree_request_wins_however_the_tasks_run() {
+        let dir = temp("order");
+        let (sink, _rx) = collecting();
+        let services = Services::start(sink).unwrap();
+        let shared = &services.shared;
+        let watched = |d: &Path| {
+            shared
+                .watch
+                .lock()
+                .unwrap()
+                .owners
+                .get(d)
+                .is_some_and(|o| o.tree)
+        };
+        // Unwatch, then a listing: the unwatch task running late is a no-op.
+        shared.watch_dir(&dir, Owner::Tree);
+        shared.tree_unwanted.lock().unwrap().insert(dir.clone());
+        shared.tree_unwanted.lock().unwrap().remove(&dir);
+        shared.unwatch_dir(&dir);
+        assert!(watched(&dir), "the newer listing keeps it watched");
+        // A listing, then Unwatch: the listing's watch running late is a no-op.
+        shared.tree_unwanted.lock().unwrap().insert(dir.clone());
+        shared.unwatch_dir(&dir);
+        shared.watch_dir(&dir, Owner::Tree);
+        assert!(!watched(&dir), "the newer unwatch keeps it unwatched");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn resolved_paths_map_back_to_the_watched_one() {
         let dir = temp("symlink");
         let link = dir.with_file_name(format!(
@@ -523,7 +645,7 @@ mod tests {
         std::os::unix::fs::symlink(&dir, &link).unwrap();
         let (sink, _rx) = collecting();
         let services = Services::start(sink).unwrap();
-        services.shared.watch_dir(&link);
+        services.shared.watch_dir(&link, Owner::Tree);
         assert!(
             services
                 .shared
@@ -535,7 +657,7 @@ mod tests {
             vec![link.join("y.md")]
         );
         // Watched both directly and through the link: both names come back.
-        services.shared.watch_dir(&dir);
+        services.shared.watch_dir(&dir, Owner::Tree);
         let names = services.shared.as_given(dir.join("x.md"));
         assert!(
             names.contains(&dir.join("x.md")) && names.contains(&link.join("x.md")),
