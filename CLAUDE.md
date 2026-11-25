@@ -20,7 +20,7 @@ The full design is in `docs/architecture.md`. Read the section you need before w
 - `stede-core`, `stede-markdown` and `stede-services` must never depend on a UI crate (ratatui, crossterm, iced, Slint). Front ends send key events in and draw the view model that comes back.
 - Every key press maps to a named action (`edit.delete_line`, `pane.focus_right`). Keymaps are data, per mode and per focused pane. Built-in actions, user commands and plugin commands share one registry, and every action has a one-line description for the key cheat sheet.
 - Prompts (new file, rename, confirm) and outputs (`:lint`, `:keys`, command output) open as modals. One close key, `Esc` by default, closes any modal. The modal stack lives in the core's layout model. The exception is search (`/`, `?`) and, later, the `:` command line: they type on the status line, as in Vim, so matches stay visible. `Esc` closes them too, and a modal that opens over one drops what was typed.
-- Two parsers: tree-sitter-md for incremental raw-pane highlighting and text objects; comrak, on a worker thread, for the full tree with source positions that feeds the render model and scroll sync.
+- Two parsers: tree-sitter-md for incremental raw-pane highlighting and text objects (from phase 2; until then the raw pane is colored from comrak's block ranges); comrak, on a worker thread, for the full tree with source positions that feeds the render model and scroll sync.
 - Slow work (linters, file watching, parsing) runs on tokio and reports back on a channel. It must never block typing.
 - Panes are open, folded to a strip at their edge, or off. Folding animates with a snap; animation can be turned off.
 

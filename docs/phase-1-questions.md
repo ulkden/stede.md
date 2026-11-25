@@ -7,7 +7,7 @@ Collected during the autonomous phase 1 run. Each entry gives the question, the 
     **Answer:** follow the dependencies. Raise the MSRV only when a dependency needs it, and keep CI's MSRV job so it never drifts silently.
 2. **comrak 1.x.** 1.0.0 was released 2026-11-17, so it's eligible from 2026-12-01. Step 3 starts on 0.59.0, and Dependabot will propose the major bump. Is moving to 1.x once it's eligible fine?
 
-    **Answer:** take comrak 1.0.0 now, a week before its 14 days are up. It's a significant jump and the owner accepts the risk. The PR carries the `dependency-age-exempt` label.
+    **Answer:** move to comrak 1.x now rather than wait. On 2026-11-24 the owner chose 1.2.0 (released 2026-11-23) over 1.0.0 and 1.1.0, accepting the risk of a release under 14 days old. This is a one-off owner waiver: the upgrade PR carries the `dependency-age-exempt` label and says so (see "Dependencies" in `CONTRIBUTING.md`).
 3. **Unicode-DFS-2016 on the license allow list.** comrak's dependency `finl_unicode` uses it. It's the permissive predecessor of Unicode-3.0, which is already allowed, and the FSF lists it as GPL-compatible. It was added to `deny.toml` with that reason in step 3's PR. Do you want it reviewed or kept?
 
     **Answer:** keep it on the allow list, with the reason in `deny.toml`.

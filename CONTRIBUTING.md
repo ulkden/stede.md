@@ -70,7 +70,7 @@ The check matters most for the toolchain, where Dependabot can't apply its coold
 
 When you add or update crates, run `just dep-settle`. It pins every too-new crate in `Cargo.lock` to its newest release that is 14+ days old and semver-compatible, then runs the check. A crate it can't settle is listed as `stuck`, usually because something requires that exact version; wait for the eligible date or pick an older version of what pulls it in.
 
-A PR that is too new fails until its eligible date, which the check prints. Re-run the job after that date. For a security fix that isn't a patch bump, add the `dependency-age-exempt` label and say why in the PR. The label waives only "too new"; pinning problems still fail. Run it locally with `just dep-age`, which needs Python 3.11+ and network access.
+A PR that is too new fails until its eligible date, which the check prints. Re-run the job after that date. For a security fix that isn't a patch bump, or a one-off early release the owner has approved, add the `dependency-age-exempt` label and say why in the PR (for an approval, who approved it and when). The label waives only "too new"; pinning problems still fail. Run it locally with `just dep-age`, which needs Python 3.11+ and network access.
 
 ### The update cycle
 

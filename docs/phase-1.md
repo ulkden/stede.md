@@ -6,9 +6,10 @@ Goal (from `docs/architecture.md`): open a folder or a file and read it, with a 
 - no panics
 - valid source ranges
 - no text lost between comrak and the render model
-- comrak's HTML, with our options, matching the spec's, apart from 17 listed exceptions that don't change what the pane shows
+- comrak's HTML, with our options, matching the spec's, apart from the exceptions listed in `HTML_EXCEPTIONS` (each with its reason), which don't change what the pane shows
 
-The terminal drawing is checked by snapshot tests, and the layout of every example at widths 1, 10, 40 and 100. Agreed with the owner on 2026-11-24.
+The terminal drawing is checked by snapshot tests, and every example is laid out and drawn at widths 1, 10, 40 and 100 without panicking. Agreed with the owner on 2026-11-24.
+
 **Exit deliverables:** a manual UX test plan for the reader, and a first draft of end-user docs for what this phase ships.
 
 Each step is one PR through the `stede-pr-review` loop. Tick a step when its PR merges.
@@ -49,6 +50,14 @@ Each step is one PR through the `stede-pr-review` loop. Tick a step when its PR 
 - [x] **8. Exit deliverables**
   - A manual UX test plan for the reader: `docs/ux-test/README.md`, with fixtures in `docs/ux-test/fixtures/`
   - A first draft of end-user docs: `docs/user-guide.md`
+
+### Follow-ups from the owner's answers
+
+These came out of `docs/phase-1-questions.md` on 2026-11-24. Each is one PR through the review loop.
+
+- [ ] **9. comrak 1.2.0** (Q2): the major bump, taken early with the owner's waiver
+- [ ] **10. Showing hidden files** (Q8): a key and a `[tree]` setting to show dotfiles and ignored files, still hidden by default
+- [ ] **11. Recursive watching** (Q9): watch the whole tree, skipping ignored paths, so changes in folders not yet opened are seen
 
 ## Phase 0 checks that need real terminals
 

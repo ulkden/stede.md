@@ -20,7 +20,8 @@ It also enforces exact pins: the toolchain must be a full version (not
 "stable"), and every remote action must be pinned to a commit SHA with a
 version comment that resolves to that SHA.
 
-For a security fix that is not a patch bump, add the `dependency-age-exempt`
+For a security fix that is not a patch bump, or a one-off early release the
+owner has approved, add the `dependency-age-exempt`
 label to the PR (CI passes --exempt) and say why in the PR. The label only
 waives "too new"; pinning problems and unverifiable versions still fail.
 
