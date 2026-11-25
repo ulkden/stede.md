@@ -230,8 +230,8 @@ The modal stack lives in the core's layout model, next to the panes, so the nati
 
 ```toml
 [keys.modal]
-close     = "<Esc>"
-close_all = "<C-c>"
+"<Esc>" = "modal.close"
+"<C-c>" = "modal.close_all"
 
 [keys.normal]
 "<leader>o" = "modal.reopen_last"

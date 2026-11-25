@@ -2,7 +2,13 @@
 
 Goal (from `docs/architecture.md`): open a folder or a file and read it, with a file tree, a raw pane and a rendered pane that scroll together, search, themes and config layers. Writing comes in phase 2.
 
-**Gate:** the GFM spec files render correctly.
+**Gate:** the GFM spec files render correctly. For all 672 examples in the vendored spec (`crates/stede-markdown/tests/gfm_spec.rs`), that means:
+- no panics
+- valid source ranges
+- no text lost between comrak and the render model
+- comrak's HTML, with our options, matching the spec's, apart from 17 listed exceptions that don't change what the pane shows
+
+The terminal drawing is checked by snapshot tests, and the layout of every example at widths 1, 10, 40 and 100. Agreed with the owner on 2026-11-24.
 **Exit deliverables:** a manual UX test plan for the reader, and a first draft of end-user docs for what this phase ships.
 
 Each step is one PR through the `stede-pr-review` loop. Tick a step when its PR merges.
