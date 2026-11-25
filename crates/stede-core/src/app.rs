@@ -114,6 +114,9 @@ pub struct App {
     /// Whether the search's matches are lit (`search.off` hides them but
     /// keeps the search for `n`, like Vim's `:noh`).
     search_lit: bool,
+    /// Whether the whole tree has been asked to be watched. Only once the
+    /// tree shows: a single file opened from `~` shouldn't watch all of it.
+    tree_watched: bool,
     /// What the file tree shows, and the config's last value for it (a
     /// toggle holds until the config itself changes, as line numbers do).
     tree_filter: TreeFilter,
@@ -156,6 +159,7 @@ impl App {
             prompt: None,
             search_at: None,
             search_lit: true,
+            tree_watched: false,
             tree_filter: TreeFilter::default(),
             config_tree_filter: None,
         };
@@ -165,13 +169,12 @@ impl App {
             app.tree = tree;
         }
         app.apply_config(&options.config, &options.config_errors);
-        if let Some(root) = app.tree.root().map(Path::to_path_buf) {
-            if !app.outbox.contains(&Request::ListDir(root.clone())) {
-                app.outbox.push(Request::ListDir(root.clone()));
-            }
-            // After the first listing: the walk can take a while.
-            app.outbox.push(Request::WatchTree(root));
+        if let Some(root) = app.tree.root().map(Path::to_path_buf)
+            && !app.outbox.contains(&Request::ListDir(root.clone()))
+        {
+            app.outbox.push(Request::ListDir(root));
         }
+        app.watch_tree_once_shown();
         if let Some(file) = options.file {
             app.current_file = Some(file.clone());
             app.request_open(file);
@@ -327,7 +330,10 @@ impl App {
             }
             ServiceEvent::Notice(message) => {
                 self.notify(message);
-                Handled::default()
+                Handled {
+                    redraw: true,
+                    wait: false,
+                }
             }
             ServiceEvent::Changed(paths) => {
                 for dir in self.tree.stale(&paths) {
@@ -529,6 +535,19 @@ impl App {
         self.apply(step)
     }
 
+    /// Asks for the whole-tree watch the first time the tree pane is open
+    /// (at start for a folder; when unfolded, for a single file).
+    fn watch_tree_once_shown(&mut self) {
+        if self.tree_watched || self.layout.state(PaneId::Tree) != crate::layout::PaneState::Open {
+            return;
+        }
+        if let Some(root) = self.tree.root().map(Path::to_path_buf) {
+            // After the first listing: the walk can take a while.
+            self.outbox.push(Request::WatchTree(root));
+            self.tree_watched = true;
+        }
+    }
+
     /// Changes what the tree shows, and lists every folder it has asked for
     /// again so the change shows at once.
     fn set_tree_filter(&mut self, filter: TreeFilter) {
@@ -669,6 +688,8 @@ impl App {
                 if let Err(e) = self.run(&action, count) {
                     self.message = Some(e);
                 }
+                // An action may have opened the tree pane.
+                self.watch_tree_once_shown();
                 Handled {
                     redraw: true,
                     wait: false,
@@ -1541,6 +1562,37 @@ mod tests {
         assert!(app.view().tree.filter.show_ignored);
         press(&mut app, "HI");
         assert_eq!(app.view().tree.filter, TreeFilter::default());
+    }
+
+    #[test]
+    fn a_single_file_watches_the_tree_only_once_it_shows() {
+        let mut app = App::new(AppOptions {
+            root: Some("/p".into()),
+            file: Some("/p/a.md".into()),
+            layout: crate::layout::LayoutOptions {
+                tree_folded: true,
+                ..Default::default()
+            },
+            ..AppOptions::default()
+        });
+        assert!(
+            !app.take_requests()
+                .iter()
+                .any(|r| matches!(r, Request::WatchTree(_))),
+            "the tree starts folded"
+        );
+        press(&mut app, "<leader>e");
+        assert!(
+            app.take_requests()
+                .contains(&Request::WatchTree("/p".into()))
+        );
+        press(&mut app, "<leader>e<leader>e");
+        assert!(
+            !app.take_requests()
+                .iter()
+                .any(|r| matches!(r, Request::WatchTree(_))),
+            "once"
+        );
     }
 
     #[test]

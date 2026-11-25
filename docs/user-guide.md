@@ -109,7 +109,7 @@ In the rendered pane, matches are found in the text as drawn. A pattern with Mar
 - Markdown files (`.md`, `.markdown`, `.mdown`, `.mkd`, `.mkdn`, `.mdx`, `.mdtext`) are rendered. Other text files are shown in the rendered pane as one code block.
 - Files over 20 MiB and binary files don't open; the pane says why.
 - When the open file changes on disk, it reloads and keeps your place. Folders shown in the tree update when files are added or removed.
-- STEDE.md watches the whole folder you open, skipping what the tree hides (dotfiles and ignored folders, unless you show them). It watches at most 4,096 folders, and says so once if there are more; folders you open in the tree are always watched. On WSL, folders under `/mnt/` are polled, so there only the folders you open are watched.
+- STEDE.md watches the whole folder you open, skipping what the tree hides (dotfiles and ignored folders, unless you show them), and walks it again when a `.gitignore` changes. It watches at most 4,096 folders, and says so once if there are more; folders you open in the tree are watched either way. Opening a single file waits until you unfold the tree. On WSL, folders under `/mnt/` are polled, so there only the folders you open are watched. If the system's own limit on watches runs out (on Linux, `fs.inotify.max_user_watches`), STEDE.md says so once.
 
 ## Configuration
 
