@@ -156,7 +156,12 @@ impl Builder {
                 node,
                 Container::Alert {
                     kind: alert_kind(alert.alert_type),
-                    title: alert.title.clone(),
+                    // A kind we don't know yet (a newer comrak) is drawn as a
+                    // note, but keeps its own name.
+                    title: alert.title.clone().or_else(|| {
+                        (!alert_known(alert.alert_type))
+                            .then(|| alert.alert_type.default_title().to_owned())
+                    }),
                     continuation: false,
                 },
             )),
@@ -255,6 +260,18 @@ fn push_children<'a>(node: &'a AstNode<'a>, stack: &mut Vec<Task<'a>>) {
     stack.extend(children.into_iter().rev().map(Task::Visit));
 }
 
+/// Whether the reader has its own look for this alert kind.
+fn alert_known(t: AlertType) -> bool {
+    matches!(
+        t,
+        AlertType::Note
+            | AlertType::Tip
+            | AlertType::Important
+            | AlertType::Warning
+            | AlertType::Caution
+    )
+}
+
 fn alert_kind(t: AlertType) -> AlertKind {
     match t {
         AlertType::Note => AlertKind::Note,
@@ -262,7 +279,8 @@ fn alert_kind(t: AlertType) -> AlertKind {
         AlertType::Important => AlertKind::Important,
         AlertType::Warning => AlertKind::Warning,
         AlertType::Caution => AlertKind::Caution,
-        // comrak 1.x marks the enum non-exhaustive: a new kind reads as a note.
+        // comrak 1.x marks the enum non-exhaustive: a new kind is drawn as a
+        // note (its title keeps its name; see the Alert arm above).
         _ => AlertKind::Note,
     }
 }
