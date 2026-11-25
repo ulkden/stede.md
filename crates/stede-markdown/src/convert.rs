@@ -152,19 +152,22 @@ impl Builder {
             NodeValue::BlockQuote | NodeValue::MultilineBlockQuote(_) => {
                 stack.push(Task::Enter(node, Container::Quote));
             }
-            NodeValue::Alert(alert) => stack.push(Task::Enter(
-                node,
-                Container::Alert {
-                    kind: alert_kind(alert.alert_type),
-                    // A kind we don't know yet (a newer comrak) is drawn as a
-                    // note, but keeps its own name.
-                    title: alert.title.clone().or_else(|| {
-                        (!alert_known(alert.alert_type))
-                            .then(|| alert.alert_type.default_title().to_owned())
-                    }),
-                    continuation: false,
-                },
-            )),
+            NodeValue::Alert(alert) => {
+                let kind = alert_kind(alert.alert_type);
+                stack.push(Task::Enter(
+                    node,
+                    Container::Alert {
+                        // A kind we have no look for (a newer comrak) is drawn
+                        // as a note, but keeps its own name.
+                        kind: kind.unwrap_or(AlertKind::Note),
+                        title: alert.title.clone().or_else(|| {
+                            kind.is_none()
+                                .then(|| alert.alert_type.default_title().to_owned())
+                        }),
+                        continuation: false,
+                    },
+                ));
+            }
             NodeValue::List(list) => {
                 let items: Vec<_> = node.children().collect();
                 for (i, item) in items.into_iter().enumerate().rev() {
@@ -260,29 +263,17 @@ fn push_children<'a>(node: &'a AstNode<'a>, stack: &mut Vec<Task<'a>>) {
     stack.extend(children.into_iter().rev().map(Task::Visit));
 }
 
-/// Whether the reader has its own look for this alert kind.
-fn alert_known(t: AlertType) -> bool {
-    matches!(
-        t,
-        AlertType::Note
-            | AlertType::Tip
-            | AlertType::Important
-            | AlertType::Warning
-            | AlertType::Caution
-    )
-}
-
-fn alert_kind(t: AlertType) -> AlertKind {
-    match t {
+/// The reader's kind for an alert, or `None` for one it has no look for
+/// (comrak 1.x marks the enum non-exhaustive).
+fn alert_kind(t: AlertType) -> Option<AlertKind> {
+    Some(match t {
         AlertType::Note => AlertKind::Note,
         AlertType::Tip => AlertKind::Tip,
         AlertType::Important => AlertKind::Important,
         AlertType::Warning => AlertKind::Warning,
         AlertType::Caution => AlertKind::Caution,
-        // comrak 1.x marks the enum non-exhaustive: a new kind is drawn as a
-        // note (its title keeps its name; see the Alert arm above).
-        _ => AlertKind::Note,
-    }
+        _ => return None,
+    })
 }
 
 fn align(a: TableAlignment) -> Align {
@@ -401,7 +392,17 @@ fn inlines<'a>(node: &'a AstNode<'a>) -> Vec<Span> {
                 ctx.group = next_group;
                 ctx.style.footnote_ref = true;
                 ctx.link = Some(r.name.clone());
-                out.emit(&format!("[^{}]", r.name), &ctx);
+                // The label as written (comrak normalizes `name`'s case).
+                let label = if r.texts.is_empty() {
+                    format!("^{}", r.name)
+                } else {
+                    r.texts
+                        .iter()
+                        .map(|(t, _)| t.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                };
+                out.emit(&format!("[{label}]"), &ctx);
                 continue;
             }
             NodeValue::EscapedTag(tag) => {
