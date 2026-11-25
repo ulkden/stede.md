@@ -31,6 +31,10 @@ pub type Sink = Arc<dyn Fn(ServiceEvent) + Send + Sync>;
 /// burst (a `git checkout`, a build) costs one re-list per folder.
 const DEBOUNCE: Duration = Duration::from_millis(150);
 
+/// Folders watched at most for the whole tree (`Request::WatchTree`), well
+/// under the usual inotify limits (8192 on older kernels).
+const MAX_DEEP_WATCHES: usize = 4096;
+
 /// How often the polling watcher (WSL `/mnt/*` paths) checks for changes.
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
@@ -60,8 +64,39 @@ struct Shared {
     /// Files being opened, and the flavor of a request that came in during
     /// the read (`Some`): the file is read again with the newest flavor.
     opening: Mutex<HashMap<PathBuf, Option<Option<String>>>>,
+    /// The whole-tree watch. Lock order: `deep`, then `watch`, then
+    /// `tree_unwanted`; nothing takes them the other way round.
+    deep: Mutex<Deep>,
+    /// The deep worker's queue; `None` once the services shut down.
+    deep_jobs: Mutex<Option<mpsc::Sender<DeepJob>>>,
+    /// The cap on whole-tree watches (a field so tests can lower it).
+    deep_limit: usize,
 }
 
+/// The whole-tree watch's state. Only the deep worker changes it, one job
+/// at a time, so a walk and the folders made during it can't race.
+#[derive(Default)]
+struct Deep {
+    root: Option<PathBuf>,
+    /// Off for a root that's polled (WSL `/mnt`): a poll of a whole tree
+    /// costs a scan every interval.
+    off: bool,
+    /// The folders it watches.
+    dirs: HashSet<PathBuf>,
+    /// Whether the cap, or the system's watch limit, has been reported.
+    warned_cap: bool,
+    warned_limit: bool,
+}
+
+/// Work for the deep worker.
+enum DeepJob {
+    /// Watch the tree under this root.
+    Root(PathBuf),
+    /// Walk again (what the tree hides changed).
+    Walk,
+    /// These paths changed: follow new and removed folders.
+    Follow(Vec<PathBuf>),
+}
 /// File watchers, made on first use.
 struct Watch {
     /// `None` once the services shut down: with it and the watchers gone,
@@ -77,19 +112,141 @@ struct Watch {
     /// share one (`.stede/` open in the tree): the OS watch goes only when
     /// neither does.
     owners: HashMap<PathBuf, Owners>,
+    /// Roots watched recursively (macOS's whole-tree watch). A flat watch
+    /// of a path under one is skipped: FSEvents keeps one setting per path,
+    /// and a flat one would turn the recursive watch off.
+    recursive: Vec<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
 struct Owners {
     tree: bool,
     config: bool,
+    deep: bool,
+}
+
+impl Owners {
+    fn set(&mut self, owner: Owner, on: bool) {
+        match owner {
+            Owner::Tree => self.tree = on,
+            Owner::Config => self.config = on,
+            Owner::Deep => self.deep = on,
+        }
+    }
+
+    fn any(self) -> bool {
+        self.tree || self.config || self.deep
+    }
+}
+
+/// How adding a watch went.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Added {
+    Yes,
+    /// The OS's limit on watches was reached.
+    Limit,
+    /// Any other failure (the folder went, say).
+    No,
+    /// The services are shutting down.
+    ShutDown,
 }
 
 /// Who asks for a watch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Owner {
+    /// A folder the tree lists.
     Tree,
+    /// A folder holding a config file.
     Config,
+    /// The whole-tree watch.
+    Deep,
+}
+
+impl Watch {
+    /// Adds the OS watch for `dir` (already resolved) and, once it's in
+    /// place, records `owner` as wanting it. Adding again re-arms it (a
+    /// folder deleted and made again is a new inode to inotify).
+    fn add(&mut self, dir: &Path, resolved: PathBuf, poll: bool, owner: Owner) -> Added {
+        self.add_mode(dir, resolved, poll, owner, RecursiveMode::NonRecursive)
+    }
+
+    fn add_mode(
+        &mut self,
+        dir: &Path,
+        resolved: PathBuf,
+        poll: bool,
+        owner: Owner,
+        mode: RecursiveMode,
+    ) -> Added {
+        let Some(events) = self.events.clone() else {
+            return Added::ShutDown;
+        };
+        // Only links need mapping back (see `as_given`), so only they're
+        // kept; a folder that stopped being one loses its old mapping.
+        if resolved == dir {
+            self.resolved.remove(dir);
+        } else {
+            self.resolved.insert(dir.to_path_buf(), resolved);
+        }
+        let skip = mode == RecursiveMode::NonRecursive
+            && self.recursive.iter().any(|r| dir.starts_with(r));
+        // A folder that can't be watched still lists; it just won't refresh
+        // on its own until it's listed (and watched) again.
+        let result = if skip {
+            Ok(())
+        } else if poll {
+            if self.poll.is_none() {
+                let config = notify::Config::default().with_poll_interval(POLL_INTERVAL);
+                self.poll = PollWatcher::new(events, config).ok();
+            }
+            match self.poll.as_mut() {
+                Some(w) => w.watch(dir, mode),
+                None => Err(notify::Error::generic("no polling watcher")),
+            }
+        } else {
+            if self.native.is_none() {
+                self.native = notify::recommended_watcher(events).ok();
+            }
+            match self.native.as_mut() {
+                Some(w) => w.watch(dir, mode),
+                None => Err(notify::Error::generic("no watcher")),
+            }
+        };
+        match result {
+            Ok(()) => {
+                if mode == RecursiveMode::Recursive && !self.recursive.iter().any(|r| r == dir) {
+                    self.recursive.push(dir.to_path_buf());
+                }
+                self.owners
+                    .entry(dir.to_path_buf())
+                    .or_default()
+                    .set(owner, true);
+                Added::Yes
+            }
+            Err(e) if matches!(e.kind, notify::ErrorKind::MaxFilesWatch) => Added::Limit,
+            Err(_) => Added::No,
+        }
+    }
+
+    /// `owner` no longer wants `dir` watched; the OS watch goes once no one
+    /// does.
+    fn drop_owner(&mut self, dir: &Path, owner: Owner) {
+        if let Some(owners) = self.owners.get_mut(dir) {
+            owners.set(owner, false);
+            if owners.any() {
+                return;
+            }
+        }
+        self.owners.remove(dir);
+        self.resolved.remove(dir);
+        self.recursive.retain(|r| r != dir);
+        if let Some(w) = self.native.as_mut() {
+            let _ = w.unwatch(dir);
+        }
+        if let Some(w) = self.poll.as_mut() {
+            let _ = w.unwatch(dir);
+        }
+    }
 }
 
 impl Services {
@@ -100,6 +257,7 @@ impl Services {
             .thread_name("stede-services")
             .build()?;
         let (events, raw) = mpsc::channel();
+        let (deep_tx, deep_rx) = mpsc::channel();
         let shared = Arc::new(Shared {
             sink,
             watch: Mutex::new(Watch {
@@ -108,13 +266,22 @@ impl Services {
                 poll: None,
                 resolved: HashMap::new(),
                 owners: HashMap::new(),
+                recursive: Vec::new(),
             }),
             config_files: Mutex::new(Vec::new()),
             inflight: Mutex::new(HashMap::new()),
             filter: Mutex::new(TreeFilter::default()),
             tree_unwanted: Mutex::new(HashSet::new()),
             opening: Mutex::new(HashMap::new()),
+            deep: Mutex::new(Deep::default()),
+            deep_jobs: Mutex::new(Some(deep_tx)),
+            deep_limit: MAX_DEEP_WATCHES,
         });
+        {
+            // The deep worker: whole-tree walks and follow-ups, in order.
+            let shared = Arc::clone(&shared);
+            runtime.spawn_blocking(move || deep_worker(&deep_rx, &shared));
+        }
         {
             // A long-running blocking task: the debouncer waits on a channel.
             let shared = Arc::clone(&shared);
@@ -154,7 +321,10 @@ impl Services {
             }
             Request::TreeFilter(filter) => {
                 *self.shared.filter.lock().expect("filter lock") = filter;
+                // What counts as hidden or ignored changed: walk again.
+                self.shared.send_deep(DeepJob::Walk);
             }
+            Request::WatchTree(root) => self.shared.send_deep(DeepJob::Root(root)),
             Request::Unwatch(dir) => {
                 self.shared
                     .tree_unwanted
@@ -222,6 +392,10 @@ impl Drop for Services {
             watch.poll = None;
             watch.events = None;
         }
+        // Closing its queue ends the deep worker.
+        if let Ok(mut jobs) = self.shared.deep_jobs.lock() {
+            *jobs = None;
+        }
         if let Some(runtime) = self.runtime.take() {
             runtime.shutdown_background();
         }
@@ -268,9 +442,6 @@ impl Shared {
         // The resolved path decides: a symlink into `/mnt/c` needs polling.
         let poll = needs_polling(&resolved);
         let mut watch = self.watch.lock().expect("watch lock");
-        let Some(events) = watch.events.clone() else {
-            return;
-        };
         // An `Unwatch` the tree sent after this listing's request wins.
         if owner == Owner::Tree
             && self
@@ -281,34 +452,222 @@ impl Shared {
         {
             return;
         }
-        let owners = watch.owners.entry(dir.to_path_buf()).or_default();
-        match owner {
-            Owner::Tree => owners.tree = true,
-            Owner::Config => owners.config = true,
+        watch.add(dir, resolved, poll, owner);
+    }
+
+    fn send_deep(&self, job: DeepJob) {
+        if let Some(jobs) = self.deep_jobs.lock().expect("deep jobs lock").as_ref() {
+            let _ = jobs.send(job);
         }
-        watch.resolved.insert(dir.to_path_buf(), resolved);
-        // A folder that can't be watched still lists; it just won't refresh
-        // on its own until it's listed (and watched) again.
-        if poll {
-            if watch.poll.is_none() {
-                let config = notify::Config::default().with_poll_interval(POLL_INTERVAL);
-                watch.poll = PollWatcher::new(events, config).ok();
+    }
+
+    /// Walks the tree's root for every folder the tree would show and
+    /// watches them, replacing the last walk's set.
+    fn deep_walk(&self) {
+        let Some(root) = self.deep.lock().expect("deep lock").root.clone() else {
+            return;
+        };
+        let resolved_root = std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
+        if needs_polling(&resolved_root) {
+            self.deep.lock().expect("deep lock").off = true;
+            return;
+        }
+        // FSEvents watches a tree natively, and notify restarts its stream
+        // for every added path: one recursive watch beats thousands. What it
+        // reports from ignored folders the core drops (it only re-lists
+        // folders the tree shows).
+        if cfg!(target_os = "macos") {
+            let mut deep = self.deep.lock().expect("deep lock");
+            if !deep.dirs.contains(&root) {
+                let mut watch = self.watch.lock().expect("watch lock");
+                watch.add_mode(
+                    &root,
+                    resolved_root,
+                    false,
+                    Owner::Deep,
+                    RecursiveMode::Recursive,
+                );
+                deep.dirs = HashSet::from([root]);
             }
-            if let Some(w) = watch.poll.as_mut() {
-                let _ = w.watch(dir, RecursiveMode::NonRecursive);
+            return;
+        }
+        let filter = *self.filter.lock().expect("filter lock");
+        let (found, capped) = walk_dirs(&root, filter, self.deep_limit);
+        // Resolve before taking locks: it touches the file system.
+        let found = resolve_all(found);
+        let mut limit = false;
+        {
+            let mut deep = self.deep.lock().expect("deep lock");
+            let mut watch = self.watch.lock().expect("watch lock");
+            let mut wanted: HashSet<PathBuf> = HashSet::new();
+            // A polled folder below the root (a link into `/mnt`) is skipped,
+            // as a polled root is.
+            for (dir, resolved, _) in found.into_iter().filter(|(_, _, poll)| !poll) {
+                if deep.dirs.contains(&dir) {
+                    wanted.insert(dir);
+                    continue;
+                }
+                match watch.add(&dir, resolved, false, Owner::Deep) {
+                    Added::Yes => {
+                        wanted.insert(dir);
+                    }
+                    Added::Limit => limit = true,
+                    Added::No => {}
+                    Added::ShutDown => return,
+                }
             }
-        } else {
-            if watch.native.is_none() {
-                watch.native = notify::recommended_watcher(events).ok();
+            for gone in deep.dirs.difference(&wanted) {
+                watch.drop_owner(gone, Owner::Deep);
             }
-            if let Some(w) = watch.native.as_mut() {
-                let _ = w.watch(dir, RecursiveMode::NonRecursive);
+            deep.dirs = wanted;
+        }
+        self.notice(capped, limit);
+    }
+
+    /// Follows changes under the watched tree. Folders that went away are
+    /// dropped. A changed folder already watched has its subtree walked
+    /// again: replaced (moved over, or deleted and made again) it's new to
+    /// inotify, and notify drops the watches under a moved or deleted
+    /// folder. A new folder the tree would show is walked and watched.
+    fn deep_follow(&self, paths: &[PathBuf]) {
+        // The recursive watch on macOS already covers new folders.
+        if cfg!(target_os = "macos") {
+            return;
+        }
+        let (root, watched) = {
+            let deep = self.deep.lock().expect("deep lock");
+            match (&deep.root, deep.off) {
+                (Some(root), false) => (root.clone(), deep.dirs.clone()),
+                _ => return,
             }
+        };
+        let filter = *self.filter.lock().expect("filter lock");
+        let under: Vec<&PathBuf> = paths
+            .iter()
+            .filter(|p| p.starts_with(&root) && *p != &root)
+            .collect();
+        let gone: Vec<&PathBuf> = under.iter().copied().filter(|p| !p.exists()).collect();
+        let changed: Vec<&PathBuf> = under.iter().copied().filter(|p| p.is_dir()).collect();
+        // A folder inside another changed one is covered by that one's walk.
+        let tops: Vec<&PathBuf> = changed
+            .iter()
+            .copied()
+            .filter(|d| !changed.iter().any(|o| o != d && d.starts_with(o)))
+            .collect();
+        let mut capped = false;
+        let mut shown: HashMap<PathBuf, HashSet<PathBuf>> = HashMap::new();
+        let mut subtrees: Vec<(PathBuf, Vec<Resolved>)> = Vec::new();
+        for dir in tops {
+            let Some(parent) = dir.parent() else { continue };
+            if !watched.contains(dir) {
+                // New: only under a folder the tree shows, and only if its
+                // parent's listing shows it too (hidden, ignored), as for
+                // any other entry. Each parent is listed once for the batch.
+                if parent != root && !watched.contains(parent) {
+                    continue;
+                }
+                let listed = shown.entry(parent.to_path_buf()).or_insert_with(|| {
+                    list_dir(parent, filter)
+                        .map(|e| e.into_iter().map(|e| e.path).collect())
+                        .unwrap_or_default()
+                });
+                if !listed.contains(dir.as_path()) {
+                    continue;
+                }
+                if watched.len() >= self.deep_limit {
+                    capped = true;
+                    continue;
+                }
+            }
+            let (found, over) = walk_dirs(dir, filter, self.deep_limit);
+            capped |= over;
+            // Resolved now, before the locks: it touches the file system.
+            subtrees.push((dir.clone(), resolve_all(found)));
+        }
+        if gone.is_empty() && subtrees.is_empty() {
+            return;
+        }
+        let mut limit = false;
+        {
+            let mut deep = self.deep.lock().expect("deep lock");
+            let mut watch = self.watch.lock().expect("watch lock");
+            let removed: Vec<PathBuf> = deep
+                .dirs
+                .iter()
+                .filter(|d| gone.iter().any(|g| d.starts_with(g)))
+                .cloned()
+                .collect();
+            for dir in removed {
+                watch.drop_owner(&dir, Owner::Deep);
+                deep.dirs.remove(&dir);
+            }
+            for (top, found) in subtrees {
+                let keep: HashSet<&PathBuf> = found.iter().map(|(d, _, _)| d).collect();
+                let stale: Vec<PathBuf> = deep
+                    .dirs
+                    .iter()
+                    .filter(|d| d.starts_with(&top) && !keep.contains(d))
+                    .cloned()
+                    .collect();
+                for dir in stale {
+                    watch.drop_owner(&dir, Owner::Deep);
+                    deep.dirs.remove(&dir);
+                }
+                for (dir, resolved, _) in found.into_iter().filter(|(_, _, poll)| !poll) {
+                    let known = deep.dirs.contains(&dir);
+                    if !known && deep.dirs.len() >= self.deep_limit {
+                        capped = true;
+                        continue;
+                    }
+                    // Known ones too: re-armed.
+                    match watch.add(&dir, resolved, false, Owner::Deep) {
+                        Added::Yes => {
+                            deep.dirs.insert(dir);
+                        }
+                        Added::Limit => limit = true,
+                        Added::No => {
+                            // Gone between the walk and now: forget it.
+                            watch.drop_owner(&dir, Owner::Deep);
+                            deep.dirs.remove(&dir);
+                        }
+                        Added::ShutDown => return,
+                    }
+                }
+            }
+        }
+        self.notice(capped, limit);
+    }
+
+    /// Tells the user, once each, that the cap or the system's limit on
+    /// watches was reached.
+    fn notice(&self, capped: bool, failed: bool) {
+        // The front end may be gone: the sink mustn't be called then.
+        if self.watch.lock().expect("watch lock").events.is_none() {
+            return;
+        }
+        let (cap, limit) = {
+            let mut deep = self.deep.lock().expect("deep lock");
+            let cap = capped && !deep.warned_cap;
+            let limit = failed && !deep.warned_limit;
+            deep.warned_cap |= capped;
+            deep.warned_limit |= failed;
+            (cap, limit)
+        };
+        if cap {
+            (self.sink)(ServiceEvent::Notice(format!(
+                "this folder has over {0} folders: only the first {0} and the ones you open are watched for changes",
+                self.deep_limit
+            )));
+        }
+        if limit {
+            (self.sink)(ServiceEvent::Notice(
+                "the system's limit on watched folders was reached: some won't refresh on their own (on Linux, raise fs.inotify.max_user_watches)".into(),
+            ));
         }
     }
 
     /// Stops the tree's watch on a folder; the OS watch goes unless the
-    /// config watcher still wants it.
+    /// config watcher or the whole-tree watch still wants it.
     fn unwatch_dir(&self, dir: &Path) {
         let mut watch = self.watch.lock().expect("watch lock");
         // A listing the tree asked for after this `Unwatch` wants it watched.
@@ -320,20 +679,7 @@ impl Shared {
         {
             return;
         }
-        if let Some(owners) = watch.owners.get_mut(dir) {
-            owners.tree = false;
-            if owners.config {
-                return;
-            }
-        }
-        watch.owners.remove(dir);
-        watch.resolved.remove(dir);
-        if let Some(w) = watch.native.as_mut() {
-            let _ = w.unwatch(dir);
-        }
-        if let Some(w) = watch.poll.as_mut() {
-            let _ = w.unwatch(dir);
-        }
+        watch.drop_owner(dir, Owner::Tree);
     }
 
     /// A watcher's path under every name the tree knows it by: as reported,
@@ -345,7 +691,7 @@ impl Shared {
         let mut mapped: Vec<(usize, PathBuf)> = watch
             .resolved
             .iter()
-            .filter(|(given, resolved)| given != resolved && path.starts_with(resolved))
+            .filter(|(_, resolved)| path.starts_with(resolved))
             .filter_map(|(given, resolved)| {
                 let rest = path.strip_prefix(resolved).ok()?;
                 Some((resolved.as_os_str().len(), given.join(rest)))
@@ -373,6 +719,7 @@ fn debounce(raw: &mpsc::Receiver<notify::Result<notify::Event>>, shared: &Shared
     // Ends when every sender (the watchers and `Services`) is gone.
     while let Ok(first) = raw.recv() {
         let mut paths: Vec<PathBuf> = Vec::new();
+        let mut seen: HashSet<PathBuf> = HashSet::new();
         let mut take = |event: notify::Result<notify::Event>| {
             let Ok(event) = event else { return };
             // Reading a folder (our own listings do) is an access, not a
@@ -381,7 +728,7 @@ fn debounce(raw: &mpsc::Receiver<notify::Result<notify::Event>>, shared: &Shared
                 return;
             }
             for path in event.paths.into_iter().flat_map(|p| shared.as_given(p)) {
-                if !paths.contains(&path) {
+                if seen.insert(path.clone()) {
                     paths.push(path);
                 }
             }
@@ -401,6 +748,8 @@ fn debounce(raw: &mpsc::Receiver<notify::Result<notify::Event>>, shared: &Shared
         let config_changed = paths
             .iter()
             .any(|p| files.iter().any(|f| f == p || f.starts_with(p)));
+        // The deep worker follows new and removed folders, off this thread.
+        shared.send_deep(DeepJob::Follow(paths.clone()));
         (shared.sink)(ServiceEvent::Changed(paths));
         if config_changed {
             // Folders that now exist get watched, then every layer is read
@@ -410,6 +759,75 @@ fn debounce(raw: &mpsc::Receiver<notify::Result<notify::Event>>, shared: &Shared
             (shared.sink)(ServiceEvent::ConfigChanged { layers, errors });
         }
     }
+}
+
+/// Runs whole-tree jobs in order until the services shut down. Jobs queued
+/// together are taken together: one walk covers many requests for one.
+fn deep_worker(jobs: &mpsc::Receiver<DeepJob>, shared: &Shared) {
+    while let Ok(first) = jobs.recv() {
+        let mut walk = false;
+        let mut follow: Vec<PathBuf> = Vec::new();
+        for job in std::iter::once(first).chain(std::iter::from_fn(|| jobs.try_recv().ok())) {
+            match job {
+                DeepJob::Root(root) => {
+                    shared.deep.lock().expect("deep lock").root = Some(root);
+                    walk = true;
+                }
+                DeepJob::Walk => walk = true,
+                DeepJob::Follow(paths) => follow.extend(paths),
+            }
+        }
+        // An ignore file changed: what the tree hides may have too.
+        walk |= follow.iter().any(|p| is_ignore_file(p));
+        if walk {
+            shared.deep_walk();
+        }
+        if !follow.is_empty() {
+            shared.deep_follow(&follow);
+        }
+    }
+}
+
+/// Whether a change to `path` can change what the tree hides. Git's own
+/// excludes (`.git/info/exclude`, the global file) aren't watched: `.git`
+/// is never walked.
+fn is_ignore_file(path: &Path) -> bool {
+    matches!(
+        path.file_name().and_then(|n| n.to_str()),
+        Some(".gitignore" | ".ignore")
+    )
+}
+
+/// A folder, its resolved path, and whether it needs polling.
+type Resolved = (PathBuf, PathBuf, bool);
+
+/// Each folder with its resolved path and whether it needs polling.
+fn resolve_all(dirs: Vec<PathBuf>) -> Vec<Resolved> {
+    dirs.into_iter()
+        .map(|d| {
+            let r = std::fs::canonicalize(&d).unwrap_or_else(|_| d.clone());
+            let poll = needs_polling(&r);
+            (d, r, poll)
+        })
+        .collect()
+}
+
+/// Every folder under `root` (itself included) that the tree would show by
+/// `filter`, stopping at `limit`. Returns them and whether it stopped short.
+fn walk_dirs(root: &Path, filter: TreeFilter, limit: usize) -> (Vec<PathBuf>, bool) {
+    let walker = files::tree_walker(root, filter).build();
+    let mut dirs = Vec::new();
+    for item in walker {
+        let Ok(item) = item else { continue };
+        if !item.file_type().is_some_and(|t| t.is_dir()) {
+            continue;
+        }
+        if dirs.len() == limit {
+            return (dirs, true);
+        }
+        dirs.push(item.into_path());
+    }
+    (dirs, false)
 }
 
 /// Whether a folder needs the polling watcher: under WSL, inotify doesn't
@@ -630,6 +1048,155 @@ mod tests {
         shared.unwatch_dir(&dir);
         shared.watch_dir(&dir, Owner::Tree);
         assert!(!watched(&dir), "the newer unwatch keeps it unwatched");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Waits up to 10 s for `cond`.
+    fn eventually(cond: impl Fn() -> bool) -> bool {
+        let until = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < until {
+            if cond() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        false
+    }
+
+    fn deep_watched(services: &Services, dir: &Path) -> bool {
+        services
+            .shared
+            .watch
+            .lock()
+            .unwrap()
+            .owners
+            .get(dir)
+            .is_some_and(|o| o.deep)
+    }
+
+    #[test]
+    fn the_whole_tree_is_watched_but_not_what_it_hides() {
+        let dir = temp("deep");
+        std::fs::create_dir_all(dir.join("a/b")).unwrap();
+        std::fs::create_dir_all(dir.join("skip/inner")).unwrap();
+        std::fs::create_dir_all(dir.join(".dot")).unwrap();
+        std::fs::write(dir.join(".gitignore"), "skip/\n").unwrap();
+        let (sink, rx) = collecting();
+        let services = Services::start(sink).unwrap();
+        services.handle(Request::WatchTree(dir.clone()));
+        // macOS watches the root recursively instead (see `deep_walk`).
+        let mac = cfg!(target_os = "macos");
+        if mac {
+            assert!(eventually(|| deep_watched(&services, &dir)));
+        } else {
+            assert!(eventually(|| deep_watched(&services, &dir.join("a/b"))));
+            assert!(!deep_watched(&services, &dir.join("skip")), "ignored");
+            assert!(!deep_watched(&services, &dir.join("skip/inner")));
+            assert!(!deep_watched(&services, &dir.join(".dot")), "hidden");
+        }
+        // A change two folders down, never opened in the tree, is seen.
+        std::fs::write(dir.join("a/b/x.md"), "x").unwrap();
+        assert!(wait_for(&rx, |e| matches!(
+            e,
+            ServiceEvent::Changed(paths) if paths.iter().any(|p| p.ends_with("a/b/x.md"))
+        )));
+        // A folder made later is followed, and what happens inside it seen.
+        std::fs::create_dir(dir.join("new")).unwrap();
+        if !mac {
+            assert!(eventually(|| deep_watched(&services, &dir.join("new"))));
+        } else {
+            std::thread::sleep(Duration::from_millis(300));
+        }
+        std::fs::write(dir.join("new/y.md"), "y").unwrap();
+        assert!(wait_for(&rx, |e| matches!(
+            e,
+            ServiceEvent::Changed(paths) if paths.iter().any(|p| p.ends_with("new/y.md"))
+        )));
+        // Showing dotfiles walks again, and the tree's unwatch leaves the
+        // whole-tree watch alone.
+        services.handle(Request::TreeFilter(TreeFilter {
+            show_hidden: true,
+            show_ignored: false,
+        }));
+        if mac {
+            return std::fs::remove_dir_all(&dir).unwrap();
+        }
+        assert!(eventually(|| deep_watched(&services, &dir.join(".dot"))));
+        services.handle(Request::ListDir(dir.join("a")));
+        services.handle(Request::Unwatch(dir.join("a")));
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(deep_watched(&services, &dir.join("a")));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_edited_gitignore_walks_again() {
+        if cfg!(target_os = "macos") {
+            return; // one recursive watch there: nothing to walk
+        }
+        let dir = temp("deep-ignore");
+        std::fs::create_dir_all(dir.join("drafts/sub")).unwrap();
+        std::fs::write(dir.join(".gitignore"), "drafts/\n").unwrap();
+        let (sink, _rx) = collecting();
+        let services = Services::start(sink).unwrap();
+        services.handle(Request::WatchTree(dir.clone()));
+        assert!(eventually(|| deep_watched(&services, &dir)));
+        assert!(!deep_watched(&services, &dir.join("drafts/sub")));
+        std::fs::write(dir.join(".gitignore"), "").unwrap();
+        assert!(
+            eventually(|| deep_watched(&services, &dir.join("drafts/sub"))),
+            "no longer ignored: watched"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_replaced_folder_is_watched_all_the_way_down_again() {
+        if cfg!(target_os = "macos") {
+            return; // one recursive watch there
+        }
+        let dir = temp("deep-replace");
+        std::fs::create_dir_all(dir.join("docs/guides/nested")).unwrap();
+        std::fs::create_dir_all(dir.join("new/guides/nested")).unwrap();
+        let (sink, rx) = collecting();
+        let services = Services::start(sink).unwrap();
+        services.handle(Request::WatchTree(dir.clone()));
+        assert!(eventually(|| deep_watched(
+            &services,
+            &dir.join("docs/guides/nested")
+        )));
+        assert!(eventually(|| deep_watched(
+            &services,
+            &dir.join("new/guides/nested")
+        )));
+        // Swapped in one go: notify drops every watch under the old docs/.
+        std::fs::rename(dir.join("docs"), dir.join("old")).unwrap();
+        std::fs::rename(dir.join("new"), dir.join("docs")).unwrap();
+        assert!(wait_for(&rx, |e| matches!(e, ServiceEvent::Changed(_))));
+        std::thread::sleep(Duration::from_millis(300));
+        std::fs::write(dir.join("docs/guides/nested/x.md"), "x").unwrap();
+        assert!(
+            wait_for(&rx, |e| matches!(
+                e,
+                ServiceEvent::Changed(paths) if paths.iter().any(|p| p.ends_with("docs/guides/nested/x.md"))
+            )),
+            "the deepest folder of the swapped-in tree is watched"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_walk_stops_at_its_cap() {
+        let dir = temp("cap");
+        for i in 0..5 {
+            std::fs::create_dir(dir.join(format!("d{i}"))).unwrap();
+        }
+        let (dirs, capped) = walk_dirs(&dir, TreeFilter::default(), 3);
+        assert_eq!(dirs.len(), 3);
+        assert!(capped);
+        let (dirs, capped) = walk_dirs(&dir, TreeFilter::default(), 100);
+        assert_eq!(dirs.len(), 6, "the root and its five folders");
+        assert!(!capped);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

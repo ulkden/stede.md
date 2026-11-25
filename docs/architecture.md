@@ -91,7 +91,7 @@ Every pick below is a maintained Rust crate; the only parts we write from scratc
 | Code blocks in the rendered pane | syntect | MIT; bundled syntax files need an audit | Sublime syntaxes and themes, no extra grammars to ship | tree-sitter-highlight (MIT) |
 | Images | [ratatui-image](https://docs.rs/crate/ratatui-image/latest), with icy\_sixel | MIT; Apache-2.0 | kitty, Sixel, iTerm2 and half-block fallback in one widget | Show alt text |
 | Fold animation and fades | Own easing code; tachyonfx for color fades | Ours; tachyonfx to be checked | Width animation is a few lines; tachyonfx adds effects built for ratatui | No animation |
-| File tree | `ignore` + `notify` | MIT or Unlicense; CC0-1.0 (newer notify code also Artistic-2.0) | Respects `.gitignore` (from ripgrep); watches for changes on disk | `walkdir` |
+| File tree | `ignore` + `notify` | MIT or Unlicense; CC0-1.0 (newer notify code also Artistic-2.0) | Respects `.gitignore` (from ripgrep); watches for changes on disk: the whole tree, skipping what the tree hides, up to 4,096 folders (one watch per folder on inotify, one recursive watch on macOS's FSEvents) | `walkdir` |
 | Fuzzy file open | nucleo | MPL-2.0 | Helix's matcher; fast on big trees | `fuzzy-matcher` (MIT) |
 | Search | `regex` | MIT or Apache-2.0 | `/` and `?` in the buffer; project search later via `grep-searcher` | Plain substring |
 | Config | `serde` + `toml` | MIT or Apache-2.0 | Readable, typed, easy to merge in layers | KDL |
@@ -671,7 +671,7 @@ One codebase builds for all three; the work is in a handful of known gaps, each 
 | macOS | Two chip types | Ship a universal binary (arm64 + x86\_64) |
 | Linux | Clipboard needs X11 or Wayland; none over SSH | arboard when a display exists, else OSC 52 |
 | Linux | Many distros and libc versions | Static musl builds for x86\_64 and aarch64 |
-| WSL | inotify does not fire for files on Windows drives (`/mnt/c`); [it works only on the Linux ext4 side](https://kiwix.lema.org/stackoverflow.com_en_all_2023-11/questions/70273307/how-to-turn-on-inotify-in-wsl2) | Detect `/mnt/*` paths and switch the watcher to polling; tell users ext4 is faster |
+| WSL | inotify does not fire for files on Windows drives (`/mnt/c`); [it works only on the Linux ext4 side](https://kiwix.lema.org/stackoverflow.com_en_all_2023-11/questions/70273307/how-to-turn-on-inotify-in-wsl2) | Detect `/mnt/*` paths and switch the watcher to polling; tell users ext4 is faster. Polling paths skip the whole-tree watch: only folders the tree lists are polled |
 | WSL | No kitty graphics in Windows Terminal | Use Sixel, which [Windows Terminal has had since 1.22](https://devblogs.microsoft.com/commandline/?p=10434) |
 | WSL | Clipboard lives on the Windows side | OSC 52, which [Windows Terminal supports](https://github.com/microsoft/terminal/issues/2946); `clip.exe` as a fallback |
 | WSL | Windows Terminal eats some Ctrl and Alt combos | Test matrix; defaults avoid the known ones |

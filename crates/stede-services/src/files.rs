@@ -90,6 +90,24 @@ pub fn open_file(path: &Path, flavor: Option<&str>) -> Result<Document, String> 
     })
 }
 
+/// A walk from `dir` that skips what the tree hides by `filter`: dotfiles,
+/// what `.gitignore`, `.ignore` or git's excludes leave out (in or out of a
+/// git repo), and `.git` always. Symlinks aren't followed.
+pub(crate) fn tree_walker(dir: &Path, filter: TreeFilter) -> ignore::WalkBuilder {
+    let mut walker = ignore::WalkBuilder::new(dir);
+    walker
+        .hidden(!filter.show_hidden)
+        .ignore(!filter.show_ignored)
+        .git_ignore(!filter.show_ignored)
+        .git_exclude(!filter.show_ignored)
+        .git_global(!filter.show_ignored)
+        .parents(true)
+        .require_git(false)
+        .follow_links(false)
+        .filter_entry(|e| e.depth() == 0 || e.file_name() != ".git");
+    walker
+}
+
 /// A folder's entries: folders first, then files, each sorted by name
 /// ignoring case. Hidden entries (dotfiles) and anything `.gitignore`,
 /// `.ignore` or git's excludes leave out are skipped, in or out of a git repo.
@@ -100,27 +118,13 @@ pub fn list_dir(dir: &Path, filter: TreeFilter) -> Result<Vec<Entry>, String> {
     // Reading the folder directly first turns "permission denied" and "not a
     // folder" into a clear error; the walker would only skip it.
     std::fs::read_dir(dir).map_err(|e| e.to_string())?;
-    let walker = ignore::WalkBuilder::new(dir)
-        .max_depth(Some(1))
-        .hidden(!filter.show_hidden)
-        .ignore(!filter.show_ignored)
-        .git_ignore(!filter.show_ignored)
-        .git_exclude(!filter.show_ignored)
-        .git_global(!filter.show_ignored)
-        .parents(true)
-        .require_git(false)
-        .follow_links(false)
-        .build();
+    let walker = tree_walker(dir, filter).max_depth(Some(1)).build();
     let mut entries = Vec::new();
     for item in walker {
         let Ok(item) = item else {
             continue;
         };
         if item.depth() == 0 {
-            continue;
-        }
-        // Git's own folder is noise even with dotfiles shown.
-        if item.file_name() == ".git" {
             continue;
         }
         let path = item.into_path();

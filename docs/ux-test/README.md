@@ -64,6 +64,8 @@ Some cases need a file you make on the spot; each says how.
 | 3.5 | `l` on `notes.txt` | The raw pane shows the text; the rendered pane shows it as one code block | |
 | 3.6 | With the folder open, create a file in another shell: `touch docs/ux-test/fixtures/new.md`, then delete it | It appears in the tree within about a second, then goes | |
 | 3.7 | On WSL, open a folder under `/mnt/c/` and repeat 3.6 there | The same, perhaps a little slower (it polls) | |
+| 3.7b | Open a large repository (thousands of folders, a big ignored `node_modules` or `target`), then run a build or `git checkout` in it | Start-up, scrolling and the tree feel the same as in a small folder. The whole-tree watch is groundwork for later features (project search, links): there's nothing new to see yet, only nothing to slow down | |
+| 3.7c | Open a folder with more than 4,096 subfolders (`mkdir -p /tmp/deep && cd /tmp/deep && mkdir d{1..5000}`) | Starts normally, and says once that only the first 4,096 folders are watched | |
 | 3.8 | Open a folder with thousands of files (`mkdir /tmp/many && touch /tmp/many/f{1..5000}.md`) | The tree fills without freezing the UI; scrolling stays smooth | |
 
 ## 4. The raw pane
