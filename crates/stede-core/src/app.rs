@@ -238,10 +238,19 @@ impl App {
             self.line_numbers = config.line_numbers;
             self.config_line_numbers = Some(config.line_numbers);
         }
-        if self.config_tree_filter != Some(config.tree_filter) {
-            self.config_tree_filter = Some(config.tree_filter);
-            self.set_tree_filter(config.tree_filter);
+        // Each setting on its own: changing one in the config doesn't undo
+        // a toggle of the other.
+        let before = self.config_tree_filter;
+        let wanted = config.tree_filter;
+        let mut filter = self.tree_filter;
+        if before.map(|b| b.show_hidden) != Some(wanted.show_hidden) {
+            filter.show_hidden = wanted.show_hidden;
         }
+        if before.map(|b| b.show_ignored) != Some(wanted.show_ignored) {
+            filter.show_ignored = wanted.show_ignored;
+        }
+        self.config_tree_filter = Some(wanted);
+        self.set_tree_filter(filter);
         let flavor = config.flavor.as_ref().map(|(name, _)| name.clone());
         let flavor_changed = flavor != self.flavor;
         self.flavor = flavor;
@@ -302,6 +311,11 @@ impl App {
                 let known = forgotten.is_some();
                 for gone in forgotten.into_iter().flatten() {
                     self.outbox.push(Request::Unwatch(gone));
+                }
+                // A folder the tree dropped while it was being listed (hidden
+                // by a toggle, or removed): its listing watched it again.
+                if !known {
+                    self.outbox.push(Request::Unwatch(dir));
                 }
                 self.rescroll_tree();
                 Handled {
@@ -1518,6 +1532,42 @@ mod tests {
     }
 
     #[test]
+    fn a_folder_dropped_mid_listing_is_unwatched() {
+        let mut app = tree_app();
+        app.take_requests();
+        app.handle_event(ServiceEvent::Listed {
+            dir: "/p/.hidden".into(),
+            result: Ok(vec![]),
+        });
+        assert_eq!(
+            app.take_requests(),
+            vec![Request::Unwatch("/p/.hidden".into())]
+        );
+    }
+
+    #[test]
+    fn hiding_the_selected_entry_selects_the_one_in_its_place() {
+        let mut app = tree_app();
+        app.handle_event(ServiceEvent::Listed {
+            dir: "/p".into(),
+            result: Ok(vec![
+                entry("/p/docs", true),
+                entry("/p/.dot.md", false),
+                entry("/p/a.md", false),
+            ]),
+        });
+        press(&mut app, "gg2j");
+        assert_eq!(app.view().tree.selected, Some(2));
+        press(&mut app, "k");
+        app.handle_event(ServiceEvent::Listed {
+            dir: "/p".into(),
+            result: Ok(vec![entry("/p/docs", true), entry("/p/a.md", false)]),
+        });
+        let view = app.view();
+        assert_eq!(view.tree.rows[view.tree.selected.unwrap()].name, "a.md");
+    }
+
+    #[test]
     fn the_config_sets_the_first_listing_and_a_toggle_outlives_reloads() {
         use crate::config::{Config, Layer};
         let layer = |t: &str| Layer {
@@ -1545,8 +1595,9 @@ mod tests {
         assert!(!app.view().tree.filter.show_hidden);
         app.apply_config(&config, &errors);
         assert!(!app.view().tree.filter.show_hidden);
-        // ...and gives way when the setting itself changes.
-        let (config, errors) = Config::from_layers(&[layer("[tree]\nshow_ignored = true\n")]);
+        // ...and through a change to the other setting...
+        let (config, errors) =
+            Config::from_layers(&[layer("[tree]\nshow_hidden = true\nshow_ignored = true\n")]);
         app.apply_config(&config, &errors);
         assert_eq!(
             app.view().tree.filter,
@@ -1555,6 +1606,14 @@ mod tests {
                 show_ignored: true,
             }
         );
+        // ...and gives way when its own setting changes.
+        let (config, errors) = Config::from_layers(&[layer("[tree]\nshow_ignored = true\n")]);
+        app.apply_config(&config, &errors);
+        assert!(!app.view().tree.filter.show_hidden);
+        let (config, errors) =
+            Config::from_layers(&[layer("[tree]\nshow_hidden = true\nshow_ignored = true\n")]);
+        app.apply_config(&config, &errors);
+        assert!(app.view().tree.filter.show_hidden);
     }
 
     #[test]

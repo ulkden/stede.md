@@ -87,6 +87,10 @@ impl Tree {
         dir: &Path,
         result: Result<Vec<Entry>, String>,
     ) -> Option<Vec<PathBuf>> {
+        // Where the selection was, so if its entry goes (hidden by a toggle,
+        // deleted) the row that takes its place is selected, not the top.
+        let rows_before = self.rows();
+        let was_at = self.selected_index(&rows_before);
         let slot = self.listings.get_mut(dir)?;
         *slot = match result {
             Ok(entries) => Listing::Loaded(entries),
@@ -105,6 +109,14 @@ impl Tree {
             for p in gone {
                 forgotten.extend(self.forget(&p));
             }
+        }
+        let rows = self.rows();
+        if let (Some(selected), Some(at)) = (self.selected.as_ref(), was_at)
+            && !rows.is_empty()
+            && !rows.iter().any(|r| &r.path == selected)
+            && rows_before.iter().any(|r| &r.path == selected)
+        {
+            self.selected = Some(rows[at.min(rows.len() - 1)].path.clone());
         }
         Some(forgotten)
     }
