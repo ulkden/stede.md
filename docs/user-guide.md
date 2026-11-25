@@ -29,7 +29,7 @@ The screen has three panes and a status line:
 
 - **Raw** shows the file as written, with line numbers, colored by block (headings, code, quotes, rules, front matter).
 - **Rendered** shows it formatted: headings, lists and task lists, tables, code blocks, quotes, alerts (`> [!NOTE]`), links and footnotes. It's read-only.
-- **Files** is the folder's tree. It hides dotfiles and anything `.gitignore` leaves out.
+- **Files** is the folder's tree. It hides dotfiles and anything `.gitignore` leaves out; `H` and `I` in the tree show them (its title then says `+hidden` or `+ignored`). Git's own `.git` folder always stays hidden.
 - **The status line** shows the mode, keys you're partway through typing, the search count (`[3/12]`) and the open file. Messages and errors show there too.
 
 The two reader panes scroll together. Scroll either one and the other follows to the same place in the document.
@@ -76,6 +76,8 @@ Counts work as in Vim: `5j` scrolls five lines, and `3n` goes three matches on.
 | `gg`, `G` | First or last entry |
 | `l`, `Enter` or `→` | Open the file or folder; on an open folder, close it |
 | `h` or `←` | Close the folder, or go to its parent |
+| `H` | Show or hide dotfiles |
+| `I` | Show or hide files that `.gitignore`, `.ignore` or git's excludes leave out |
 
 ### Windows (cheat sheet, config problems, output)
 
@@ -131,6 +133,10 @@ name = "dark"                  # or "light" (a bare theme = "light" works too)
 
 [ui]
 tree_side = "right"            # or "left"
+
+[tree]
+show_hidden = false            # dotfiles (H toggles it)
+show_ignored = false           # files .gitignore leaves out (I toggles it)
 
 [editor.line_numbers]
 mode = "absolute"              # or "off"; "relative" and "hybrid" show absolute for now
@@ -218,6 +224,7 @@ A color is `#rrggbb`, `#rgb`, `default` (the terminal's own), or an ANSI name (`
 | `rendered.jump` | Show the top rendered block's source in the raw pane |
 | `tree.down`, `tree.up`, `tree.top`, `tree.bottom` | Move the tree's selection |
 | `tree.open`, `tree.close` | Open or close the selected file or folder |
+| `tree.toggle_hidden`, `tree.toggle_ignored` | Show or hide dotfiles, or ignored files, in the tree |
 | `search.forward`, `search.backward` | Start typing a search |
 | `search.next`, `search.prev` | Next or previous match |
 | `search.off` | Hide search highlights |

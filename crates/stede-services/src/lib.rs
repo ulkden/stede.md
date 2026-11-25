@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 
 use notify::{PollWatcher, RecommendedWatcher, RecursiveMode, Watcher};
 use stede_core::config::read_layers;
-use stede_core::io::{Request, ServiceEvent};
+use stede_core::io::{Request, ServiceEvent, TreeFilter};
 
 /// Where results go. Called from service threads. It may block while the
 /// front end's queue is full; once the front end is gone it must return.
@@ -50,6 +50,8 @@ struct Shared {
     /// Folders being listed, and whether another listing was asked for
     /// meanwhile. One listing per folder at a time keeps results in order.
     inflight: Mutex<HashMap<PathBuf, bool>>,
+    /// What listings show; set by the core.
+    filter: Mutex<TreeFilter>,
     /// Files being opened, and the flavor of a request that came in during
     /// the read (`Some`): the file is read again with the newest flavor.
     opening: Mutex<HashMap<PathBuf, Option<Option<String>>>>,
@@ -86,6 +88,7 @@ impl Services {
             }),
             config_files: Mutex::new(Vec::new()),
             inflight: Mutex::new(HashMap::new()),
+            filter: Mutex::new(TreeFilter::default()),
             opening: Mutex::new(HashMap::new()),
         });
         {
@@ -119,6 +122,9 @@ impl Services {
                 let shared = Arc::clone(&self.shared);
                 self.runtime()
                     .spawn_blocking(move || shared.list_until_settled(dir));
+            }
+            Request::TreeFilter(filter) => {
+                *self.shared.filter.lock().expect("filter lock") = filter;
             }
             Request::Unwatch(dir) => {
                 let shared = Arc::clone(&self.shared);
@@ -196,7 +202,10 @@ impl Shared {
             // Watch first, so a change during the listing isn't missed; and
             // every time, so a folder deleted and made again is watched again.
             self.watch_dir(&dir);
-            let result = guarded(|| list_dir(&dir));
+            // Read each time: a listing asked for again after the filter
+            // changed shows the new one.
+            let filter = *self.filter.lock().expect("filter lock");
+            let result = guarded(|| list_dir(&dir, filter));
             (self.sink)(ServiceEvent::Listed {
                 dir: dir.clone(),
                 result,
@@ -401,6 +410,33 @@ mod tests {
                 |e| matches!(e, ServiceEvent::Changed(paths) if paths.iter().any(|p| p.ends_with("b.md")))
             ),
             "a new file is reported"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn listings_follow_the_tree_filter() {
+        let dir = temp("filter");
+        std::fs::write(dir.join("a.md"), "a").unwrap();
+        std::fs::write(dir.join(".dot.md"), "d").unwrap();
+        let (sink, rx) = collecting();
+        let services = Services::start(sink).unwrap();
+        services.handle(Request::ListDir(dir.clone()));
+        assert!(wait_for(&rx, |e| matches!(
+            e,
+            ServiceEvent::Listed { result: Ok(entries), .. } if entries.len() == 1
+        )));
+        services.handle(Request::TreeFilter(TreeFilter {
+            show_hidden: true,
+            show_ignored: false,
+        }));
+        services.handle(Request::ListDir(dir.clone()));
+        assert!(
+            wait_for(&rx, |e| matches!(
+                e,
+                ServiceEvent::Listed { result: Ok(entries), .. } if entries.len() == 2
+            )),
+            "the dotfile shows once the filter says so"
         );
         std::fs::remove_dir_all(&dir).unwrap();
     }

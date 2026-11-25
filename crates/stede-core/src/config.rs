@@ -110,6 +110,8 @@ pub struct Config {
     pub flavor: Option<(String, Origin)>,
     /// Whether the raw pane shows line numbers (`[editor.line_numbers]`).
     pub line_numbers: bool,
+    /// What the file tree shows (`[tree]`).
+    pub tree_filter: crate::io::TreeFilter,
     pub theme: Theme,
 }
 
@@ -122,6 +124,7 @@ impl Default for Config {
             tree_side: TreeSide::Right,
             flavor: None,
             line_numbers: true,
+            tree_filter: crate::io::TreeFilter::default(),
             theme: Theme::default(),
         }
     }
@@ -271,6 +274,7 @@ impl LayerParser<'_> {
                 "keys" => self.keys(item, &origin),
                 "ui" => self.ui(item, &origin),
                 "markdown" => self.markdown(item, &origin),
+                "tree" => self.tree(item, &origin),
                 // The design doc writes both at the top level too.
                 "flavor" => self.flavor(item, origin),
                 "theme" if item.is_str() => self.theme_name(item, &origin),
@@ -431,6 +435,30 @@ impl LayerParser<'_> {
                     None => {}
                 },
                 _ => self.note(&origin, "not built yet; this setting does nothing for now"),
+            }
+        }
+    }
+
+    fn tree(&mut self, item: &Item, origin: &Origin) {
+        let Some(table) = self.table(item, origin) else {
+            return;
+        };
+        for (key, item) in table.iter() {
+            let origin = self.origin(table, key, &format!("tree.{}", path_part(key)));
+            let flag = match key {
+                "show_hidden" => &mut self.config.tree_filter.show_hidden,
+                "show_ignored" => &mut self.config.tree_filter.show_ignored,
+                _ => {
+                    self.error(&origin, "unknown key; expected show_hidden or show_ignored");
+                    continue;
+                }
+            };
+            match item.as_bool() {
+                Some(on) => *flag = on,
+                None => self.error(
+                    &origin,
+                    format!("expected true or false, found {}", item.type_name()),
+                ),
             }
         }
     }
@@ -658,6 +686,24 @@ mod tests {
         assert_eq!(c.leader, Key::char(' '));
         assert_eq!(c.theme.name(), "dark");
         assert_eq!(c.tree_side, TreeSide::Right);
+    }
+
+    #[test]
+    fn tree_settings() {
+        let (c, errors) = Config::from_layers(&[layer(
+            "c.toml",
+            "[tree]\nshow_hidden = true\nshow_ignored = \"yes\"\nshow_all = true\n",
+        )]);
+        assert!(c.tree_filter.show_hidden);
+        assert!(!c.tree_filter.show_ignored);
+        let messages: Vec<String> = errors.iter().map(|e| e.to_string()).collect();
+        assert_eq!(
+            messages,
+            vec![
+                "c.toml:3: tree.show_ignored: expected true or false, found string",
+                "c.toml:4: tree.show_all: unknown key; expected show_hidden or show_ignored",
+            ]
+        );
     }
 
     #[test]

@@ -56,6 +56,8 @@ Some cases need a file you make on the spot; each says how.
 | # | Do | Expect | ✓ |
 | --- | --- | --- | --- |
 | 3.1 | Open the fixtures folder and look at the tree | Folders first, then files. No `ignored.md`, `.hidden.md` or `.gitignore` | |
+| 3.1b | In the tree, `H`, then `I`, then both again | `H` shows `.hidden.md`, `.gitignore` and `.stede/` if present, never `.git`. `I` shows `ignored.md`. The title says `+hidden` and `+ignored` while they show, and open folders update too | |
+| 3.1c | Set `[tree]` with `show_hidden = true` in `docs/ux-test/fixtures/.stede/local.toml` and save; press `H`; save the file again unchanged | Dotfiles show on save. `H` hides them, and saving again without changing the setting doesn't bring them back | |
 | 3.2 | `j`, `k`, `gg` and `G`, plus the arrow keys | The selection moves and stays visible in a long list | |
 | 3.3 | `l` (or `Enter`) on `guides/`, then on `nested/`; `h` on `deep.md`; `h` again | Folders open in place. `h` on a file goes to its folder, and on an open folder closes it | |
 | 3.4 ★ | `l` on `tour.md` | The file opens in the reader panes, and the raw pane title shows its name | |

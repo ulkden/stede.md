@@ -19,11 +19,23 @@ pub struct Entry {
     pub is_dir: bool,
 }
 
+/// What the file tree lists beyond the default (`[tree]` and the tree's
+/// toggle keys). By default dotfiles and ignored files are left out.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TreeFilter {
+    /// Show dotfiles (`.git` itself stays hidden).
+    pub show_hidden: bool,
+    /// Show what `.gitignore`, `.ignore` and git's excludes leave out.
+    pub show_ignored: bool,
+}
+
 /// Work the core asks for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Request {
-    /// List a folder's entries (respecting `.gitignore`), and watch it.
+    /// List a folder's entries (by the current [`TreeFilter`]), and watch it.
     ListDir(PathBuf),
+    /// What later listings show. The core lists open folders again after it.
+    TreeFilter(TreeFilter),
     /// Stop watching a folder the tree no longer shows (it was removed).
     Unwatch(PathBuf),
     /// Read a file and build its render model, in a flavor (`None` for the

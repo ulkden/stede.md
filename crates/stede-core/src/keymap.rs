@@ -557,6 +557,8 @@ const DEFAULT_BINDINGS: &[(Mode, Scope, &str, &str)] = &[
     (Normal, Pane(PaneId::Tree), "<CR>", "tree.open"),
     (Normal, Pane(PaneId::Tree), "<Right>", "tree.open"),
     (Normal, Pane(PaneId::Tree), "h", "tree.close"),
+    (Normal, Pane(PaneId::Tree), "H", "tree.toggle_hidden"),
+    (Normal, Pane(PaneId::Tree), "I", "tree.toggle_ignored"),
     (Normal, Pane(PaneId::Tree), "<Left>", "tree.close"),
     (Normal, OutputModal, "j", "modal.scroll_down"),
     (Normal, OutputModal, "<Down>", "modal.scroll_down"),

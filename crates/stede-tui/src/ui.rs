@@ -264,7 +264,17 @@ fn draw_pane(
     };
     // The tree's title names its folder, the raw pane its file.
     let title = match (pane.id, &view.tree.root, &view.raw.title) {
-        (PaneId::Tree, Some(root), _) => format!(" {}: {root} ", pane.title),
+        (PaneId::Tree, Some(root), _) => {
+            // Name what's shown beyond the default, so a toggle can't be forgotten.
+            let f = view.tree.filter;
+            let more = match (f.show_hidden, f.show_ignored) {
+                (true, true) => " +hidden +ignored",
+                (true, false) => " +hidden",
+                (false, true) => " +ignored",
+                (false, false) => "",
+            };
+            format!(" {}: {root}{more} ", pane.title)
+        }
         (PaneId::Raw, _, Some(file)) => format!(" {}: {file} ", pane.title),
         _ => format!(" {} ", pane.title),
     };

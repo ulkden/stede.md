@@ -139,6 +139,14 @@ impl Tree {
         dropped
     }
 
+    /// Every folder the tree has asked to list (the root first), to list
+    /// again when what the tree shows changes.
+    pub fn listed_dirs(&self) -> Vec<PathBuf> {
+        let mut dirs: Vec<PathBuf> = self.listings.keys().cloned().collect();
+        dirs.sort();
+        dirs
+    }
+
     /// The visible rows, in order.
     pub fn rows(&self) -> Vec<TreeRow> {
         let mut rows = Vec::new();
