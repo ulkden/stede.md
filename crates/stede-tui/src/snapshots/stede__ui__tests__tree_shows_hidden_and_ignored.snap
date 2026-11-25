@@ -1,0 +1,10 @@
+---
+source: crates/stede-tui/src/ui.rs
+expression: "render(&mut app, 150, 6)"
+---
+"┌ Raw ─────────────────────────────────────────────────────┐┌ Rendered ────────────────────────────────────────────────┐┌ Files +hidden +ignored: not┐"
+"│No file open: pick one in the file tree                   ││No file open: pick one in the file tree                   ││▸ .stede/                   │"
+"│                                                          ││                                                          ││  a.md                      │"
+"│                                                          ││                                                          ││                            │"
+"└──────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────────┘└────────────────────────────┘"
+" NORMAL   ignored files shown in the tree                                                                                                             "

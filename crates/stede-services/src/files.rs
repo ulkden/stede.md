@@ -4,7 +4,7 @@
 use std::io::Read;
 use std::path::Path;
 
-use stede_core::io::{Document, Entry};
+use stede_core::io::{Document, Entry, TreeFilter};
 use stede_core::render::{Block, BlockKind, LineRange, RenderModel};
 use stede_markdown::{Flavor, line_count, render};
 
@@ -94,16 +94,19 @@ pub fn open_file(path: &Path, flavor: Option<&str>) -> Result<Document, String> 
 /// ignoring case. Hidden entries (dotfiles) and anything `.gitignore`,
 /// `.ignore` or git's excludes leave out are skipped, in or out of a git repo.
 /// Symlinks to folders count as folders.
-pub fn list_dir(dir: &Path) -> Result<Vec<Entry>, String> {
+///
+/// `filter` can show dotfiles and ignored files too; `.git` is always left out.
+pub fn list_dir(dir: &Path, filter: TreeFilter) -> Result<Vec<Entry>, String> {
     // Reading the folder directly first turns "permission denied" and "not a
     // folder" into a clear error; the walker would only skip it.
     std::fs::read_dir(dir).map_err(|e| e.to_string())?;
     let walker = ignore::WalkBuilder::new(dir)
         .max_depth(Some(1))
-        .hidden(true)
-        .git_ignore(true)
-        .git_exclude(true)
-        .git_global(true)
+        .hidden(!filter.show_hidden)
+        .ignore(!filter.show_ignored)
+        .git_ignore(!filter.show_ignored)
+        .git_exclude(!filter.show_ignored)
+        .git_global(!filter.show_ignored)
         .parents(true)
         .require_git(false)
         .follow_links(false)
@@ -114,6 +117,10 @@ pub fn list_dir(dir: &Path) -> Result<Vec<Entry>, String> {
             continue;
         };
         if item.depth() == 0 {
+            continue;
+        }
+        // Git's own folder is noise even with dotfiles shown.
+        if item.file_name() == ".git" {
             continue;
         }
         let path = item.into_path();
@@ -155,11 +162,39 @@ mod tests {
         std::fs::create_dir(dir.join("zdocs")).unwrap();
         std::fs::create_dir(dir.join("build")).unwrap();
         std::fs::write(dir.join(".gitignore"), "*.log\nbuild/\n").unwrap();
-        let names: Vec<(String, bool)> = list_dir(&dir)
-            .unwrap()
-            .into_iter()
-            .map(|e| (e.name, e.is_dir))
-            .collect();
+        let names = |filter| -> Vec<(String, bool)> {
+            list_dir(&dir, filter)
+                .unwrap()
+                .into_iter()
+                .map(|e| (e.name, e.is_dir))
+                .collect()
+        };
+        std::fs::create_dir(dir.join(".git")).unwrap();
+        let all = names(TreeFilter {
+            show_hidden: true,
+            show_ignored: true,
+        });
+        let all_names: Vec<&str> = all.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(
+            all_names,
+            vec![
+                "build",
+                "zdocs",
+                ".gitignore",
+                ".hidden",
+                "A.md",
+                "b.md",
+                "secret.log"
+            ],
+            "everything but .git"
+        );
+        let dotfiles = names(TreeFilter {
+            show_hidden: true,
+            show_ignored: false,
+        });
+        assert!(dotfiles.iter().any(|(n, _)| n == ".hidden"));
+        assert!(!dotfiles.iter().any(|(n, _)| n == "secret.log"));
+        let names = names(TreeFilter::default());
         assert_eq!(
             names,
             vec![
@@ -215,6 +250,6 @@ mod tests {
 
     #[test]
     fn missing_folders_are_errors() {
-        assert!(list_dir(Path::new("/no/such/folder/here")).is_err());
+        assert!(list_dir(Path::new("/no/such/folder/here"), TreeFilter::default()).is_err());
     }
 }

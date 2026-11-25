@@ -290,6 +290,16 @@ const BUILTINS: &[(&str, &str, &[Mode])] = &[
         "Type into the pattern (any printable key)",
         SEARCH,
     ),
+    (
+        "tree.toggle_hidden",
+        "Show or hide dotfiles in the file tree",
+        NORMAL,
+    ),
+    (
+        "tree.toggle_ignored",
+        "Show or hide files .gitignore leaves out, in the file tree",
+        NORMAL,
+    ),
     ("view.down", "Scroll down a line", NORMAL),
     ("view.up", "Scroll up a line", NORMAL),
     ("view.half_down", "Scroll down half a page", NORMAL),

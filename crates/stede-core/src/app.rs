@@ -6,12 +6,12 @@
 //! [`App::handle_timeout`] once [`App::key_timeout`] passes with no new key.
 //! Then it draws [`App::view`].
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::action::{Action, Registry};
 use crate::doc::Doc;
-use crate::io::{Request, ServiceEvent};
+use crate::io::{Request, ServiceEvent, TreeFilter};
 use crate::key::{Key, format_keys};
 use crate::keymap::{Context, Keymap, Mode, Resolver, Scope, Step};
 use crate::layout::{Layout, LayoutOptions, PaneId};
@@ -114,6 +114,10 @@ pub struct App {
     /// Whether the search's matches are lit (`search.off` hides them but
     /// keeps the search for `n`, like Vim's `:noh`).
     search_lit: bool,
+    /// What the file tree shows, and the config's last value for it (a
+    /// toggle holds until the config itself changes, as line numbers do).
+    tree_filter: TreeFilter,
+    config_tree_filter: Option<TreeFilter>,
     /// The line-numbers setting config last gave, so a reload that didn't
     /// change it keeps the session's `<leader>n` choice.
     config_line_numbers: Option<bool>,
@@ -152,13 +156,20 @@ impl App {
             prompt: None,
             search_at: None,
             search_lit: true,
+            tree_filter: TreeFilter::default(),
+            config_tree_filter: None,
         };
+        // The config first: it sets what the first listing shows.
         if let Some(root) = options.root {
-            let (tree, first) = Tree::new(root, options.file.clone());
+            let (tree, _) = Tree::new(root, options.file.clone());
             app.tree = tree;
-            app.outbox.push(Request::ListDir(first));
         }
         app.apply_config(&options.config, &options.config_errors);
+        if let Some(root) = app.tree.root().map(Path::to_path_buf)
+            && !app.outbox.contains(&Request::ListDir(root.clone()))
+        {
+            app.outbox.push(Request::ListDir(root));
+        }
         if let Some(file) = options.file {
             app.current_file = Some(file.clone());
             app.request_open(file);
@@ -227,6 +238,19 @@ impl App {
             self.line_numbers = config.line_numbers;
             self.config_line_numbers = Some(config.line_numbers);
         }
+        // Each setting on its own: changing one in the config doesn't undo
+        // a toggle of the other.
+        let before = self.config_tree_filter;
+        let wanted = config.tree_filter;
+        let mut filter = self.tree_filter;
+        if before.map(|b| b.show_hidden) != Some(wanted.show_hidden) {
+            filter.show_hidden = wanted.show_hidden;
+        }
+        if before.map(|b| b.show_ignored) != Some(wanted.show_ignored) {
+            filter.show_ignored = wanted.show_ignored;
+        }
+        self.config_tree_filter = Some(wanted);
+        self.set_tree_filter(filter);
         let flavor = config.flavor.as_ref().map(|(name, _)| name.clone());
         let flavor_changed = flavor != self.flavor;
         self.flavor = flavor;
@@ -287,6 +311,11 @@ impl App {
                 let known = forgotten.is_some();
                 for gone in forgotten.into_iter().flatten() {
                     self.outbox.push(Request::Unwatch(gone));
+                }
+                // A folder the tree dropped while it was being listed (hidden
+                // by a toggle, or removed): its listing watched it again.
+                if !known {
+                    self.outbox.push(Request::Unwatch(dir));
                 }
                 self.rescroll_tree();
                 Handled {
@@ -492,6 +521,19 @@ impl App {
             }
         }
         self.apply(step)
+    }
+
+    /// Changes what the tree shows, and lists every folder it has asked for
+    /// again so the change shows at once.
+    fn set_tree_filter(&mut self, filter: TreeFilter) {
+        if filter == self.tree_filter {
+            return;
+        }
+        self.tree_filter = filter;
+        self.outbox.push(Request::TreeFilter(filter));
+        for dir in self.tree.listed_dirs() {
+            self.outbox.push(Request::ListDir(dir));
+        }
     }
 
     /// The document's lines, for searching.
@@ -700,6 +742,21 @@ impl App {
                     self.rendered_follow_raw();
                 }
                 self.sync_ends();
+            }
+            "tree.toggle_hidden" | "tree.toggle_ignored" => {
+                let mut filter = self.tree_filter;
+                let (flag, what) = if action.name == "tree.toggle_hidden" {
+                    (&mut filter.show_hidden, "dotfiles")
+                } else {
+                    (&mut filter.show_ignored, "ignored files")
+                };
+                *flag = !*flag;
+                let shown = *flag;
+                self.set_tree_filter(filter);
+                self.message = Some(format!(
+                    "{what} {} in the tree",
+                    if shown { "shown" } else { "hidden" }
+                ));
             }
             "search.forward" | "search.backward" => {
                 let direction = if action.name == "search.forward" {
@@ -1076,6 +1133,7 @@ impl App {
             scroll: self.tree.scroll(),
             loading: self.tree.is_loading(),
             error: self.tree.root_error().map(str::to_owned),
+            filter: self.tree_filter,
             rows,
         };
         let raw = match &self.doc {
@@ -1442,6 +1500,142 @@ mod tests {
         press(&mut app, "2<C-l>");
         assert_eq!(app.layout().focus(), PaneId::Tree);
         app
+    }
+
+    #[test]
+    fn tree_toggles_relist_every_folder_with_the_new_filter() {
+        let mut app = tree_app();
+        press(&mut app, "l");
+        app.take_requests();
+        press(&mut app, "H");
+        let shown = TreeFilter {
+            show_hidden: true,
+            show_ignored: false,
+        };
+        assert_eq!(
+            app.take_requests(),
+            vec![
+                Request::TreeFilter(shown),
+                Request::ListDir("/p".into()),
+                Request::ListDir("/p/docs".into()),
+            ]
+        );
+        assert_eq!(app.view().tree.filter, shown);
+        assert_eq!(
+            app.view().status.message.as_deref(),
+            Some("dotfiles shown in the tree")
+        );
+        press(&mut app, "I");
+        assert!(app.view().tree.filter.show_ignored);
+        press(&mut app, "HI");
+        assert_eq!(app.view().tree.filter, TreeFilter::default());
+    }
+
+    #[test]
+    fn a_folder_dropped_mid_listing_is_unwatched() {
+        let mut app = tree_app();
+        app.take_requests();
+        app.handle_event(ServiceEvent::Listed {
+            dir: "/p/.hidden".into(),
+            result: Ok(vec![]),
+        });
+        assert_eq!(
+            app.take_requests(),
+            vec![Request::Unwatch("/p/.hidden".into())]
+        );
+    }
+
+    #[test]
+    fn hiding_the_selected_entry_selects_the_one_in_its_place() {
+        let mut app = tree_app();
+        app.handle_event(ServiceEvent::Listed {
+            dir: "/p".into(),
+            result: Ok(vec![
+                entry("/p/docs", true),
+                entry("/p/.dot.md", false),
+                entry("/p/a.md", false),
+            ]),
+        });
+        press(&mut app, "gg2j");
+        assert_eq!(app.view().tree.selected, Some(2));
+        press(&mut app, "k");
+        app.handle_event(ServiceEvent::Listed {
+            dir: "/p".into(),
+            result: Ok(vec![entry("/p/docs", true), entry("/p/a.md", false)]),
+        });
+        let view = app.view();
+        assert_eq!(view.tree.rows[view.tree.selected.unwrap()].name, "a.md");
+        // Several go at once: the first one after it that stays is chosen.
+        app.handle_event(ServiceEvent::Listed {
+            dir: "/p".into(),
+            result: Ok(vec![
+                entry("/p/docs", true),
+                entry("/p/.a", false),
+                entry("/p/.b", false),
+                entry("/p/c.md", false),
+                entry("/p/d.md", false),
+            ]),
+        });
+        press(&mut app, "gg2j");
+        app.handle_event(ServiceEvent::Listed {
+            dir: "/p".into(),
+            result: Ok(vec![
+                entry("/p/docs", true),
+                entry("/p/c.md", false),
+                entry("/p/d.md", false),
+            ]),
+        });
+        let view = app.view();
+        assert_eq!(view.tree.rows[view.tree.selected.unwrap()].name, "c.md");
+    }
+
+    #[test]
+    fn the_config_sets_the_first_listing_and_a_toggle_outlives_reloads() {
+        use crate::config::{Config, Layer};
+        let layer = |t: &str| Layer {
+            path: "c.toml".into(),
+            text: t.into(),
+        };
+        let (config, errors) = Config::from_layers(&[layer("[tree]\nshow_hidden = true\n")]);
+        assert!(errors.is_empty(), "{errors:?}");
+        let mut app = App::new(AppOptions {
+            root: Some("/p".into()),
+            config: config.clone(),
+            ..AppOptions::default()
+        });
+        let filter = TreeFilter {
+            show_hidden: true,
+            show_ignored: false,
+        };
+        // The filter goes first, then one listing: not one per filter.
+        assert_eq!(
+            app.take_requests(),
+            vec![Request::TreeFilter(filter), Request::ListDir("/p".into())]
+        );
+        // A toggle holds through a reload of the same config...
+        press(&mut app, "<C-l><C-l>H");
+        assert!(!app.view().tree.filter.show_hidden);
+        app.apply_config(&config, &errors);
+        assert!(!app.view().tree.filter.show_hidden);
+        // ...and through a change to the other setting...
+        let (config, errors) =
+            Config::from_layers(&[layer("[tree]\nshow_hidden = true\nshow_ignored = true\n")]);
+        app.apply_config(&config, &errors);
+        assert_eq!(
+            app.view().tree.filter,
+            TreeFilter {
+                show_hidden: false,
+                show_ignored: true,
+            }
+        );
+        // ...and gives way when its own setting changes.
+        let (config, errors) = Config::from_layers(&[layer("[tree]\nshow_ignored = true\n")]);
+        app.apply_config(&config, &errors);
+        assert!(!app.view().tree.filter.show_hidden);
+        let (config, errors) =
+            Config::from_layers(&[layer("[tree]\nshow_hidden = true\nshow_ignored = true\n")]);
+        app.apply_config(&config, &errors);
+        assert!(app.view().tree.filter.show_hidden);
     }
 
     #[test]

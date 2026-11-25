@@ -87,6 +87,10 @@ impl Tree {
         dir: &Path,
         result: Result<Vec<Entry>, String>,
     ) -> Option<Vec<PathBuf>> {
+        // Where the selection was, so if its entry goes (hidden by a toggle,
+        // deleted) the row that takes its place is selected, not the top.
+        let rows_before = self.rows();
+        let was_at = self.selected_index(&rows_before);
         let slot = self.listings.get_mut(dir)?;
         *slot = match result {
             Ok(entries) => Listing::Loaded(entries),
@@ -105,6 +109,19 @@ impl Tree {
             for p in gone {
                 forgotten.extend(self.forget(&p));
             }
+        }
+        let rows = self.rows();
+        if let (Some(selected), Some(at)) = (self.selected.clone(), was_at)
+            && !rows.is_empty()
+            && !rows.iter().any(|r| r.path == selected)
+            && rows_before.iter().any(|r| r.path == selected)
+        {
+            // The first row after it that's still there, else the nearest
+            // before it: several rows can go at once (H hides every dotfile).
+            let kept = |r: &&TreeRow| rows.iter().any(|n| n.path == r.path);
+            let next = rows_before[at..].iter().find(kept);
+            let prev = rows_before[..at].iter().rev().find(kept);
+            self.selected = next.or(prev).map(|r| r.path.clone());
         }
         Some(forgotten)
     }
@@ -137,6 +154,14 @@ impl Tree {
         self.listings.retain(|p, _| !p.starts_with(dir));
         self.expanded.retain(|p| !p.starts_with(dir));
         dropped
+    }
+
+    /// Every folder the tree has asked to list (the root first), to list
+    /// again when what the tree shows changes.
+    pub fn listed_dirs(&self) -> Vec<PathBuf> {
+        let mut dirs: Vec<PathBuf> = self.listings.keys().cloned().collect();
+        dirs.sort();
+        dirs
     }
 
     /// The visible rows, in order.

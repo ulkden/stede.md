@@ -264,7 +264,19 @@ fn draw_pane(
     };
     // The tree's title names its folder, the raw pane its file.
     let title = match (pane.id, &view.tree.root, &view.raw.title) {
-        (PaneId::Tree, Some(root), _) => format!(" {}: {root} ", pane.title),
+        (PaneId::Tree, Some(root), _) => {
+            // Name what's shown beyond the default, so a toggle can't be
+            // forgotten.
+            let f = view.tree.filter;
+            let more = match (f.show_hidden, f.show_ignored) {
+                (true, true) => " +hidden +ignored",
+                (true, false) => " +hidden",
+                (false, true) => " +ignored",
+                (false, false) => "",
+            };
+            // Before the folder's name: a narrow pane cuts the name, not these.
+            format!(" {}{more}: {root} ", pane.title)
+        }
         (PaneId::Raw, _, Some(file)) => format!(" {}: {file} ", pane.title),
         _ => format!(" {} ", pane.title),
     };
@@ -915,6 +927,33 @@ mod tests {
             result: Ok(vec![entry("/notes/drafts/idea.md", false)]),
         });
         insta::assert_snapshot!("tree_listed", render(&mut app, 70, 8));
+    }
+
+    #[test]
+    fn tree_title_names_what_it_shows_beyond_the_default() {
+        use stede_core::io::{Entry, ServiceEvent};
+        let entry = |p: &str, dir: bool| Entry {
+            name: std::path::Path::new(p)
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+            path: p.into(),
+            is_dir: dir,
+        };
+        let mut app = App::new(AppOptions {
+            root: Some("/notes".into()),
+            ..AppOptions::default()
+        });
+        app.handle_event(ServiceEvent::Listed {
+            dir: "/notes".into(),
+            result: Ok(vec![
+                entry("/notes/.stede", true),
+                entry("/notes/a.md", false),
+            ]),
+        });
+        press(&mut app, "2<C-l>HI");
+        insta::assert_snapshot!("tree_shows_hidden_and_ignored", render(&mut app, 150, 6));
     }
 
     #[test]

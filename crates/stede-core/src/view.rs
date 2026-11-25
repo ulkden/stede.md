@@ -134,4 +134,6 @@ pub struct TreeView {
     pub loading: bool,
     /// Why the root couldn't be listed.
     pub error: Option<String>,
+    /// What it shows beyond the default: mark the title when it shows more.
+    pub filter: crate::io::TreeFilter,
 }
