@@ -36,6 +36,11 @@ pub enum Request {
     ListDir(PathBuf),
     /// What later listings show. The core lists open folders again after it.
     TreeFilter(TreeFilter),
+    /// Watch every folder under the tree's root that the tree would show
+    /// (by the current [`TreeFilter`]), opened or not, so changes anywhere
+    /// are seen. Capped, and skipped where watching means polling (WSL
+    /// `/mnt`); folders the tree lists are watched either way.
+    WatchTree(PathBuf),
     /// Stop watching a folder the tree no longer shows (it was removed).
     Unwatch(PathBuf),
     /// Read a file and build its render model, in a flavor (`None` for the
@@ -66,6 +71,8 @@ pub enum ServiceEvent {
     },
     /// These folders changed on disk.
     Changed(Vec<PathBuf>),
+    /// Something to tell the user once, such as the watch cap being reached.
+    Notice(String),
     /// A file was read and parsed, or why it couldn't be.
     Opened {
         path: PathBuf,

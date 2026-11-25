@@ -57,7 +57,7 @@ These came out of `docs/phase-1-questions.md` on 2026-11-24. Each is one PR thro
 
 - [x] **9. comrak 1.2.0** (Q2): the major bump, taken early with the owner's waiver
 - [x] **10. Showing hidden files** (Q8): a key and a `[tree]` setting to show dotfiles and ignored files, still hidden by default
-- [ ] **11. Recursive watching** (Q9): watch the whole tree, skipping ignored paths, so changes in folders not yet opened are seen
+- [x] **11. Recursive watching** (Q9): watch the whole tree, skipping ignored paths, so changes in folders not yet opened are seen
 
 ## Phase 0 checks that need real terminals
 

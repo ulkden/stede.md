@@ -64,6 +64,8 @@ Some cases need a file you make on the spot; each says how.
 | 3.5 | `l` on `notes.txt` | The raw pane shows the text; the rendered pane shows it as one code block | |
 | 3.6 | With the folder open, create a file in another shell: `touch docs/ux-test/fixtures/new.md`, then delete it | It appears in the tree within about a second, then goes | |
 | 3.7 | On WSL, open a folder under `/mnt/c/` and repeat 3.6 there | The same, perhaps a little slower (it polls) | |
+| 3.7b | With the fixtures open and `guides/nested/` never opened, `touch docs/ux-test/fixtures/guides/nested/late.md`, then open `guides/` and `nested/` | `late.md` is there. (The whole tree is watched; nothing in the tree changes until you open the folder, which lists it fresh either way.) | |
+| 3.7c | Open a folder with more than 4,096 subfolders (`mkdir -p /tmp/deep && cd /tmp/deep && mkdir d{1..5000}`) | Starts normally, and says once that only the first 4,096 folders are watched | |
 | 3.8 | Open a folder with thousands of files (`mkdir /tmp/many && touch /tmp/many/f{1..5000}.md`) | The tree fills without freezing the UI; scrolling stays smooth | |
 
 ## 4. The raw pane

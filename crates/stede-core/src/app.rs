@@ -165,10 +165,12 @@ impl App {
             app.tree = tree;
         }
         app.apply_config(&options.config, &options.config_errors);
-        if let Some(root) = app.tree.root().map(Path::to_path_buf)
-            && !app.outbox.contains(&Request::ListDir(root.clone()))
-        {
-            app.outbox.push(Request::ListDir(root));
+        if let Some(root) = app.tree.root().map(Path::to_path_buf) {
+            if !app.outbox.contains(&Request::ListDir(root.clone())) {
+                app.outbox.push(Request::ListDir(root.clone()));
+            }
+            // After the first listing: the walk can take a while.
+            app.outbox.push(Request::WatchTree(root));
         }
         if let Some(file) = options.file {
             app.current_file = Some(file.clone());
@@ -322,6 +324,10 @@ impl App {
                     redraw: known,
                     wait: false,
                 }
+            }
+            ServiceEvent::Notice(message) => {
+                self.notify(message);
+                Handled::default()
             }
             ServiceEvent::Changed(paths) => {
                 for dir in self.tree.stale(&paths) {
@@ -1492,7 +1498,13 @@ mod tests {
             root: Some("/p".into()),
             ..AppOptions::default()
         });
-        assert_eq!(app.take_requests(), vec![Request::ListDir("/p".into())]);
+        assert_eq!(
+            app.take_requests(),
+            vec![
+                Request::ListDir("/p".into()),
+                Request::WatchTree("/p".into())
+            ]
+        );
         app.handle_event(ServiceEvent::Listed {
             dir: "/p".into(),
             result: Ok(vec![entry("/p/docs", true), entry("/p/a.md", false)]),
@@ -1610,7 +1622,11 @@ mod tests {
         // The filter goes first, then one listing: not one per filter.
         assert_eq!(
             app.take_requests(),
-            vec![Request::TreeFilter(filter), Request::ListDir("/p".into())]
+            vec![
+                Request::TreeFilter(filter),
+                Request::ListDir("/p".into()),
+                Request::WatchTree("/p".into())
+            ]
         );
         // A toggle holds through a reload of the same config...
         press(&mut app, "<C-l><C-l>H");
